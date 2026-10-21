@@ -9,7 +9,7 @@ mkdir -p "$2"
 out="$(cd "$2" && pwd)"
 
 cd "$src"
-npm install --no-audit --no-fund --no-save
+if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund --no-save; fi
 make build-bind-imgui         # emcc: imgui + bindings -> build/bind-imgui.js (wasm inlined)
 npm run build-imgui           # tsc: src/imgui.ts -> build/imgui.js + typings
 npm run dist                  # rollup: UMD bundles in dist/
