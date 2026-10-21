@@ -100,8 +100,14 @@ function frame() {
 }
 `,
     "Assets": `// Uses the sample assets that ship with the playground (open Assets to see them).
-// Upload your own and change the names below. Fonts load at the top level only:
-// Dear ImGui 1.80 bakes each font size up front.
+// Upload your own and change the names below.
+//
+//   assets.font(name, size = 16)  -> ImFont, for ImGui.PushFont(f) ... ImGui.PopFont()
+//                                    top level only: Dear ImGui 1.80 bakes each size up front
+//   assets.image(name)            -> { id, width, height, size }, e.g. ImGui.Image(img.id, img.size)
+//   assets.has(name)              -> boolean
+//   assets.fonts(), assets.images() -> string[] of file names
+
 const heading = assets.font("Roboto-Medium.ttf", 30);
 const body = assets.font("Roboto-Medium.ttf", 16);
 const mono = assets.font("Cousine-Regular.ttf", 14);
@@ -370,16 +376,26 @@ function frame() {
       "  /** Natural size, ready to pass as the size argument. */",
       "  size: import(\"imgui-js\").Vec2;",
       "}",
-      "/** Fonts and images uploaded from the Assets panel. */",
+      "/** Fonts and images from the Assets panel (uploads and built-in samples). */",
       "declare const assets: {",
-      "  /** An uploaded .ttf/.otf baked at a pixel size (6-128). Call at the top level, not inside frame(). */",
+      "  /**",
+      "   * Loads a .ttf/.otf from Assets at a pixel size (6-128, default 16) and returns an ImFont.",
+      "   * Call at the top level, not inside frame().",
+      "   * @example const title = assets.font(\"Roboto-Medium.ttf\", 28);",
+      "   * // in frame(): ImGui.PushFont(title); ImGui.Text(\"Hi\"); ImGui.PopFont();",
+      "   */",
       "  font(name: string, size?: number): import(\"imgui-js\").Font;",
-      "  /** An uploaded image. Safe to call anywhere. */",
+      "  /**",
+      "   * Returns { id, width, height, size } for an image in Assets. Safe to call anywhere.",
+      "   * @example const logo = assets.image(\"badge.svg\");",
+      "   * // in frame(): ImGui.Image(logo.id, logo.size);",
+      "   */",
       "  image(name: string): PlaygroundImage;",
+      "  /** True if a font or image with this file name is in Assets. */",
       "  has(name: string): boolean;",
-      "  /** Names of uploaded fonts. */",
+      "  /** File names of all fonts in Assets, e.g. [\"Cousine-Regular.ttf\", \"Roboto-Medium.ttf\"]. */",
       "  fonts(): string[];",
-      "  /** Names of uploaded images. */",
+      "  /** File names of all images in Assets, e.g. [\"badge.svg\"]. */",
       "  images(): string[];",
       "};",
     ].join("\n"), "file:///typings/globals.d.ts");
@@ -500,9 +516,11 @@ function frame() {
 
   function snippetFor(entry) {
     const quoted = JSON.stringify(entry.name);
+    const font = varName(entry.name, "font");
+    const image = varName(entry.name, "image");
     return entry.kind === "font"
-      ? "const " + varName(entry.name, "font") + " = assets.font(" + quoted + ", 18);\n"
-      : "const " + varName(entry.name, "image") + " = assets.image(" + quoted + ");\n";
+      ? "const " + font + " = assets.font(" + quoted + ", 18); // ImGui.PushFont(" + font + ") ... ImGui.PopFont()\n"
+      : "const " + image + " = assets.image(" + quoted + "); // ImGui.Image(" + image + ".id, " + image + ".size)\n";
   }
 
   function insertSnippet(entry) {
