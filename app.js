@@ -210,6 +210,8 @@ function mix(a, b, t) {
   );
 }
 
+// The /** @param */ line tells the editor what dl is, so dl. autocompletes.
+/** @param {ImDrawList} dl */
 function gradientText(dl, pos, text, from, to, shift) {
   const first = dl.VtxCount;             // vertices before
   dl.AddText(pos, IM_COL32(255, 255, 255), text);
@@ -225,9 +227,24 @@ function gradientText(dl, pos, text, from, to, shift) {
   }
 }
 
+// HSV gives a rainbow. ColorConvertHSVtoRGB writes its results into one-element arrays (0 to 1).
+/** @param {ImDrawList} dl */
+function rainbowText(dl, pos, text, shift) {
+  const first = dl.VtxCount;
+  dl.AddText(pos, IM_COL32(255, 255, 255), text);
+  const width = ImGui.CalcTextSize(text).x;
+  const r = [0], g = [0], b = [0];
+  for (let i = first; i < dl.VtxCount; i++) {
+    const hue = ((((dl.GetVtxPos(i).x - pos.x) / width + shift) % 1) + 1) % 1;
+    ImGui.ColorConvertHSVtoRGB(hue, 0.8, 1, r, g, b);
+    dl.SetVtxColor(i, IM_COL32(Math.round(r[0] * 255), Math.round(g[0] * 255), Math.round(b[0] * 255)));
+  }
+}
+
 function frame() {
   const dl = ImGui.GetForegroundDrawList();
   const t = ImGui.GetTime();
+  rainbowText(dl, new ImVec2(40, 100), "Rainbow text", t * 0.2);
   gradientText(dl, new ImVec2(40, 40), "Gradient text", [255, 80, 120], [80, 160, 255], t * 0.3);
 
   // Vertices can move too: this wobbles each letter.
@@ -543,6 +560,12 @@ function frame() {
     ts.javascriptDefaults.addExtraLib(module, "file:///typings/jsimgui.d.ts");
 
     const imgui = "import(\"jsimgui\")";
+    // Classes and interfaces are also usable as types, e.g. /** @param {ImDrawList} dl */ for a function
+    // parameter (the editor can't infer a parameter's type, so it needs this hint to autocomplete).
+    const typeNames = new Set();
+    for (const m of typings.matchAll(/^export (?:declare )?(?:class|interface|type) (\w+)/gm)) typeNames.add(m[1]);
+    const typeAliases = GLOBAL_NAMES.filter((n) => n !== "ImGui" && typeNames.has(n))
+      .map((n) => "type " + n + " = " + imgui + "." + n + ";");
     ts.javascriptDefaults.addExtraLib([
       "declare const ImGui: Omit<typeof " + imgui + ".ImGui, " + DOCKING.map((n) => JSON.stringify(n)).join(" | ") + "> & {",
       "  /** Push a font, optionally at a size in pixels (0 or omitted keeps the current size). Pair with ImGui.PopFont(). */",
@@ -581,7 +604,7 @@ function frame() {
       "  /** Checkbox toggling bits of [flags] (C++ overload; same as CheckboxFlagsIntPtr). */",
       "  CheckboxFlags(label: string, flags: [number], flags_value: number): boolean;",
       "};",
-    ].concat(GLOBAL_NAMES.filter((n) => n !== "ImGui").map((n) => "declare const " + n + ": typeof " + imgui + "." + n + ";"), [
+    ].concat(GLOBAL_NAMES.filter((n) => n !== "ImGui").map((n) => "declare const " + n + ": typeof " + imgui + "." + n + ";"), typeAliases, [
       "/** Packs 8-bit RGBA into an ImU32 color for draw lists, like C++'s IM_COL32 macro. Alpha defaults to 255. */",
       "declare function IM_COL32(r: number, g: number, b: number, a?: number): number;",
       "interface PlaygroundImage {",
