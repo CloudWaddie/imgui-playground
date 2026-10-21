@@ -82,7 +82,7 @@ jobs:
           cp -r index.html app.js assets.js CNAME samples _site/
           # Publish each built version under lib/<id>/ and list only the ones that exist.
           for id in $(jq -r '.[].id' imgui-versions.json); do
-            if [ -f "built/imgui-$id/imgui.umd.js" ]; then
+            if [ -f "built/imgui-$id/mod.js" ]; then
               cp -r "built/imgui-$id" "_site/lib/$id"
             else
               echo "::warning::imgui $id did not build; leaving it out"
