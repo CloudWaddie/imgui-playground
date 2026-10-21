@@ -198,6 +198,47 @@ function frame() {
   ImGui.End();
 }
 `,
+    "Gradient text": `// Recolor text per vertex: note VtxCount, draw, then rewrite the vertices that were added.
+// Each glyph is a quad, so setting a vertex's color blends smoothly across the letter.
+
+// Blend two colors: t = 0 gives a, t = 1 gives b. Colors are [r, g, b], 0-255.
+function mix(a, b, t) {
+  return IM_COL32(
+    Math.round(a[0] + (b[0] - a[0]) * t),
+    Math.round(a[1] + (b[1] - a[1]) * t),
+    Math.round(a[2] + (b[2] - a[2]) * t)
+  );
+}
+
+function gradientText(dl, pos, text, from, to, shift) {
+  const first = dl.VtxCount;             // vertices before
+  dl.AddText(pos, IM_COL32(255, 255, 255), text);
+  const last = dl.VtxCount;              // vertices after
+
+  const width = ImGui.CalcTextSize(text).x;
+  for (let i = first; i < last; i++) {
+    const x = dl.GetVtxPos(i).x - pos.x;
+    // Sweep the gradient along the text; the fractional part makes it wrap around.
+    const t = (x / width + shift) % 1;
+    const wave = t < 0.5 ? t * 2 : 2 - t * 2; // 0 -> 1 -> 0, so the ends match
+    dl.SetVtxColor(i, mix(from, to, wave));
+  }
+}
+
+function frame() {
+  const dl = ImGui.GetForegroundDrawList();
+  const t = ImGui.GetTime();
+  gradientText(dl, new ImVec2(40, 40), "Gradient text", [255, 80, 120], [80, 160, 255], t * 0.3);
+
+  // Vertices can move too: this wobbles each letter.
+  const first = dl.VtxCount;
+  dl.AddText(new ImVec2(40, 70), IM_COL32(255, 220, 120), "Wobbling text");
+  for (let i = first; i < dl.VtxCount; i++) {
+    const p = dl.GetVtxPos(i);
+    dl.SetVtxPos(i, new ImVec2(p.x, p.y + Math.sin(t * 4 + p.x * 0.08) * 4));
+  }
+}
+`,
     "Blank": `function frame() {
   ImGui.Begin("Hello");
   ImGui.Text("Start here.");

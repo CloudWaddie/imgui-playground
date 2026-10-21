@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ImGui Playground</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18'%3E%3Crect x='1.5' y='2.5' width='15' height='13' rx='2' fill='%23131418' stroke='%234296fa' stroke-width='1.5'/%3E%3Crect x='1.5' y='2.5' width='15' height='4' rx='2' fill='%234296fa'/%3E%3Crect x='4' y='9' width='6' height='1.6' rx='.8' fill='%23a3a8b4'/%3E%3Crect x='4' y='12' width='9' height='1.6' rx='.8' fill='%23a3a8b4'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      color-scheme: dark;
+      /* Neutrals lean slightly toward the accent hue; the accent is Dear ImGui's own default blue. */
+      --bg: #131418;
+      --chrome: #1a1c21;
+      --raised: #23262d;
+      --line: #2c2f37;
+      --ink: #e3e5ea;
+      --ink-2: #a3a8b4;
+      --ink-3: #7d8391;
+      --accent: #4296fa;
+      --accent-ink: #0b1626;
+      --ok: #5fc48a;
+      --warn: #e8b34b;
+      --err: #f0716a;
+      --err-bg: #3a1d1f;
+      --mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
+      --split: 50%;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; }
+    body {
+      display: grid;
+      grid-template-rows: 44px 1fr 26px;
+      background: var(--bg);
+      color: var(--ink);
+      font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+      overflow: hidden;
+    }
+
+    /* Top bar */
+    .bar {
+      display: flex; align-items: center; gap: 8px;
+      padding: 0 10px 0 14px;
+      background: var(--chrome);
+      border-bottom: 1px solid var(--line);
+    }
+    .brand { display: flex; align-items: center; gap: 9px; margin-right: auto; min-width: 0; }
+    .brand svg { flex: none; }
+    .brand b { font-weight: 600; letter-spacing: -0.01em; }
+    .version {
+      appearance: none; -webkit-appearance: none;
+      height: 20px; padding: 0 18px 0 7px; border-radius: 10px;
+      border: 1px solid var(--line);
+      background: var(--raised) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath d='M1 1l3 3 3-3' fill='none' stroke='%237d8391' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 6px center;
+      color: var(--ink-2); font: 500 11px/1 var(--mono);
+      cursor: pointer;
+      transition: border-color 120ms ease-out, color 120ms ease-out;
+    }
+    .version:hover:enabled { border-color: #3a3e48; color: var(--ink); }
+    /* One build: a label, not a menu. */
+    .version:disabled { cursor: default; background-image: none; padding-right: 7px; opacity: 1; }
+    .version:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .version option { background: var(--raised); color: var(--ink); }
+
+    .control {
+      height: 28px; padding: 0 10px;
+      display: inline-flex; align-items: center; gap: 6px;
+      background: transparent; color: var(--ink-2);
+      border: 1px solid transparent; border-radius: 5px;
+      font: inherit; cursor: pointer;
+      transition: background-color 120ms ease-out, color 120ms ease-out, border-color 120ms ease-out;
+    }
+    .control:hover { background: var(--raised); color: var(--ink); }
+    .control:focus-visible, .toggle input:focus-visible + i { outline: 2px solid var(--accent); outline-offset: 1px; }
+    select.control { border-color: var(--line); padding-right: 6px; }
+    select.control option { background: var(--raised); color: var(--ink); }
+    .primary { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+    .primary:hover { background: #63a9fb; color: var(--accent-ink); }
+    kbd { font-family: var(--mono); font-size: 11px; opacity: 0.7; }
+
+    .toggle { display: inline-flex; align-items: center; gap: 7px; padding: 0 8px; color: var(--ink-2); cursor: pointer; user-select: none; }
+    .toggle input { position: absolute; opacity: 0; pointer-events: none; }
+    .toggle i { width: 26px; height: 15px; border-radius: 8px; background: var(--line); position: relative; transition: background-color 150ms ease-out; }
+    .toggle i::after { content: ""; position: absolute; top: 2px; left: 2px; width: 11px; height: 11px; border-radius: 50%; background: var(--ink-2); transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1), background-color 150ms ease-out; }
+    .toggle input:checked + i { background: var(--accent); }
+    .toggle input:checked + i::after { transform: translateX(11px); background: #fff; }
+    .sep { width: 1px; height: 18px; background: var(--line); margin: 0 4px; }
+    .count:not(:empty) {
+      min-width: 17px; height: 17px; padding: 0 5px; border-radius: 9px;
+      display: inline-grid; place-items: center;
+      background: var(--raised); color: var(--ink); font-family: var(--mono); font-size: 10.5px;
+    }
+    .control.icon { width: 28px; padding: 0; justify-content: center; }
+
+    /* Assets popover */
+    .panel {
+      position: fixed; inset: 50px 10px auto auto; margin: 0;
+      width: min(380px, calc(100vw - 20px)); max-height: calc(100vh - 90px); overflow: auto;
+      padding: 0; border: 1px solid var(--line); border-radius: 8px;
+      background: var(--chrome); color: var(--ink);
+      box-shadow: 0 18px 50px -12px rgb(0 0 0 / 0.7);
+      opacity: 0; transform: translateY(-4px);
+      transition: opacity 160ms ease-out, transform 220ms cubic-bezier(0.22, 1, 0.36, 1), overlay 160ms allow-discrete, display 160ms allow-discrete;
+    }
+    .panel:popover-open { opacity: 1; transform: none; }
+    @starting-style { .panel:popover-open { opacity: 0; transform: translateY(-4px); } }
+    .panel-head { padding: 14px 16px 12px; display: grid; gap: 3px; }
+    .panel-head span { color: var(--ink-2); font-size: 12px; }
+    .drop {
+      margin: 0 12px; padding: 16px;
+      display: grid; gap: 4px; justify-items: center; text-align: center;
+      border: 1px dashed #3a3e48; border-radius: 6px;
+      color: var(--ink-2); cursor: pointer;
+      transition: border-color 120ms ease-out, background-color 120ms ease-out;
+    }
+    .drop:hover, .drop:focus-within { border-color: var(--accent); background: rgb(66 150 250 / 0.06); }
+    .drop b { color: var(--accent); font-weight: 600; }
+    .drop small { color: var(--ink-3); font-size: 11.5px; }
+    .drop input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+    .asset-list { list-style: none; margin: 10px 0 0; padding: 0 6px 6px; }
+    .asset-list li {
+      display: grid; grid-template-columns: 36px 1fr auto auto; align-items: center; gap: 10px;
+      padding: 6px; border-radius: 6px;
+    }
+    .asset-list li:hover { background: var(--raised); }
+    .preview {
+      width: 36px; height: 36px; border-radius: 5px; overflow: hidden;
+      display: grid; place-items: center;
+      background: #0e0f12; border: 1px solid var(--line);
+      font-size: 17px; color: var(--ink);
+    }
+    .preview img { width: 100%; height: 100%; object-fit: cover; }
+    .info { display: grid; min-width: 0; }
+    .info b { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .info span { color: var(--ink-3); font-size: 11.5px; font-family: var(--mono); }
+    .empty { margin: 12px 16px 16px; color: var(--ink-3); font-size: 12px; line-height: 1.5; }
+    .api { margin: 4px 0 0; padding: 12px 16px 14px; border-top: 1px solid var(--line); font-size: 12px; line-height: 1.5; }
+    .api dt { display: flex; flex-wrap: wrap; gap: 2px 8px; margin-top: 8px; }
+    .api dt:first-child { margin-top: 0; }
+    .api dt code { color: var(--ink); }
+    .api dt span { font-family: var(--mono); font-size: 11.5px; color: var(--accent); }
+    .api dd { margin: 2px 0 0; color: var(--ink-3); }
+    .api code, .empty code { font-family: var(--mono); font-size: 11.5px; }
+    .api dd code { color: var(--ink-2); }
+
+    .drop-overlay {
+      position: fixed; inset: 0; z-index: 10;
+      display: grid; place-items: center;
+      background: rgb(19 20 24 / 0.82);
+      outline: 2px dashed var(--accent); outline-offset: -12px;
+      opacity: 0; pointer-events: none;
+      transition: opacity 140ms ease-out;
+    }
+    .drop-overlay span { font-size: 15px; font-weight: 600; color: var(--ink); }
+    body.dropping .drop-overlay { opacity: 1; }
+
+    /* Workspace */
+    main { display: grid; grid-template-columns: var(--split) 5px 1fr; min-height: 0; }
+    .pane { display: grid; grid-template-rows: 30px 1fr; min-width: 0; min-height: 0; }
+    .pane-head {
+      display: flex; align-items: center; gap: 8px;
+      padding: 0 12px;
+      background: var(--chrome);
+      border-bottom: 1px solid var(--line);
+      color: var(--ink-3); font-family: var(--mono); font-size: 11.5px;
+    }
+    .pane-head .tab { color: var(--ink); }
+    .pane-head .meta { margin-left: auto; }
+    #editor { min-width: 0; min-height: 0; }
+
+    .divider { background: var(--line); cursor: col-resize; position: relative; }
+    .divider::after { content: ""; position: absolute; inset: 0 -4px; }
+    .divider:hover, .divider.dragging { background: var(--accent); }
+
+    #output {
+      position: relative; min-width: 0; min-height: 0; overflow: hidden;
+      background-color: #0e0f12;
+      background-image: radial-gradient(circle at 1px 1px, #262932 1px, transparent 0);
+      background-size: 20px 20px;
+    }
+    #output canvas { position: absolute; inset: 0; width: 100%; height: 100%; outline: none; }
+    body.resizing iframe, body.resizing canvas { pointer-events: none; }
+    body.resizing { cursor: col-resize; user-select: none; }
+
+    /* Status bar */
+    .status {
+      display: flex; align-items: center; gap: 16px;
+      padding: 0 12px;
+      background: var(--chrome);
+      border-top: 1px solid var(--line);
+      font-family: var(--mono); font-size: 11.5px; color: var(--ink-2);
+      transition: background-color 200ms ease-out;
+    }
+    .status .msg { display: flex; align-items: center; gap: 8px; min-width: 0; margin-right: auto; }
+    .status .msg span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .status .dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); }
+    .status[data-kind="ok"] .dot { background: var(--ok); }
+    .status[data-kind="warn"] .dot { background: var(--warn); }
+    .status[data-kind="error"] { background: var(--err-bg); color: #ffd9d6; }
+    .status[data-kind="error"] .dot { background: var(--err); }
+    .status .stat { color: var(--ink-3); white-space: nowrap; }
+
+    @media (max-width: 760px) {
+      body { grid-template-rows: auto 1fr 26px; }
+      .bar { flex-wrap: wrap; padding: 6px 10px; row-gap: 6px; }
+      .sep, .hide-sm { display: none; }
+      main { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
+      .divider { display: none; }
+      .pane + .pane { border-top: 1px solid var(--line); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      * { transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <header class="bar">
+    <div class="brand">
+      <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+        <rect x="1.5" y="2.5" width="15" height="13" rx="2" fill="none" stroke="#4296fa" stroke-width="1.5"/>
+        <rect x="1.5" y="2.5" width="15" height="4" rx="2" fill="#4296fa"/>
+        <rect x="4" y="9" width="6" height="1.6" rx=".8" fill="#a3a8b4"/>
+        <rect x="4" y="12" width="9" height="1.6" rx=".8" fill="#a3a8b4"/>
+      </svg>
+      <b>ImGui Playground</b>
+      <select id="imgui-version" class="version" aria-label="Dear ImGui version" title="Dear ImGui version" hidden></select>
+    </div>
+
+    <select id="examples" class="control" aria-label="Load example">
+      <option value="" selected disabled>Examples</option>
+    </select>
+    <button class="control" popovertarget="assets-panel" title="Fonts and images for your code">
+      Assets <span class="count" id="asset-count"></span>
+    </button>
+    <label class="toggle" title="Apply changes as you type">
+      <input type="checkbox" id="live" checked>
+      <i></i><span class="hide-sm">Hot reload</span>
+    </label>
+    <span class="sep"></span>
+    <button id="reset" class="control" title="Discard your code and load the default example">Reset</button>
+    <button id="apply" class="control primary" title="Apply (Ctrl+S)">Apply <kbd class="hide-sm">Ctrl S</kbd></button>
+  </header>
+
+  <main id="workspace">
+    <section class="pane">
+      <div class="pane-head"><span class="tab">main.js</span></div>
+      <div id="editor"></div>
+    </section>
+    <div class="divider" id="divider" role="separator" aria-orientation="vertical" aria-label="Resize panes"></div>
+    <section class="pane">
+      <div class="pane-head"><span class="tab">Preview</span><span class="meta" id="size"></span></div>
+      <div id="output"></div>
+    </section>
+  </main>
+
+  <div id="assets-panel" class="panel" popover>
+    <div class="panel-head">
+      <b>Assets</b>
+      <span>Fonts and images for your code. Stored in this browser.</span>
+    </div>
+    <label class="drop">
+      <input type="file" id="asset-file" multiple accept=".ttf,.otf,.ttc,image/*">
+      <span><b>Choose files</b> or drop them anywhere</span>
+      <small>.ttf / .otf fonts &middot; png, jpg, gif, webp, svg</small>
+    </label>
+    <ul class="asset-list" id="asset-list"></ul>
+    <p class="empty" id="asset-empty">Nothing here yet.</p>
+    <dl class="api">
+      <dt><code>assets.font(name)</code><span>→ ImFont</span></dt>
+      <dd>Pick the size when drawing: <code>ImGui.PushFont(f, 24)</code> … <code>ImGui.PopFont()</code>. Any size, anywhere.</dd>
+      <dt><code>assets.image(name)</code><span>→ { ref, width, height, size }</span></dt>
+      <dd>Pass <code>ref</code> to <code>ImGui.Image(img.ref, img.size)</code>, <code>ImageButton</code>, or <code>drawList.AddImage</code>.</dd>
+      <dt><code>assets.has(name)</code><span>→ boolean</span></dt>
+      <dt><code>assets.fonts()</code>, <code>assets.images()</code><span>→ string[]</span></dt>
+      <dd>Names of everything listed above. See <b>Examples → Assets</b>.</dd>
+    </dl>
+  </div>
+
+  <div class="drop-overlay" aria-hidden="true"><span>Drop to add to Assets</span></div>
+
+  <footer class="status" id="status" data-kind="">
+    <div class="msg"><i class="dot"></i><span id="status-text">Loading ImGui and editor…</span></div>
+    <span class="stat" id="fps"></span>
+  </footer>
+
+  <script>
+    // Dear ImGui via jsimgui (ES module). lib/<version>/ is compiled in CI (see imgui-versions.json);
+    // without it (opening the page locally) fall back to the same release published on npm.
+    (function () {
+      const PREF_KEY = "imgui-playground.version";
+      const NPM = { id: "1.92.8", base: "https://cdn.jsdelivr.net/npm/@mori2003/jsimgui@0.14.0/build/" };
+      const rest = [
+        "https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/loader.js", // Monaco: the editor VS Code is built on
+        // CI replaces __BUILD__ with the commit, so a deploy never runs against a cached old script.
+        "assets.js?v=__BUILD__",
+        "app.js?v=__BUILD__",
+      ];
+
+      function load(src) {
+        return new Promise(function (resolve, reject) {
+          const s = document.createElement("script");
+          s.src = src;
+          s.onload = resolve;
+          s.onerror = () => reject(new Error("Couldn't load " + src));
+          document.body.appendChild(s);
+        });
+      }
+
+      async function listBuilds() {
+        let built = [];
+        try {
+          const response = await fetch("lib/versions.json", { cache: "no-cache" });
+          if (response.ok) built = await response.json();
+        } catch (e) {
+          // No lib/ (opened locally): only the npm build.
+        }
+        const builds = built.map((v) => ({ id: v.id, base: new URL(v.path || "lib/" + v.id + "/", location.href).href }));
+        if (!builds.length) builds.push(NPM);
+        return builds;
+      }
+
+      function preferred() {
+        const fromUrl = new URLSearchParams(location.search).get("imgui");
+        if (fromUrl) return fromUrl;
+        try { return localStorage.getItem(PREF_KEY); } catch (e) { return null; }
+      }
+
+      function setupPicker(builds, active) {
+        const picker = document.getElementById("imgui-version");
+        builds.forEach((b) => picker.appendChild(new Option("v" + b.id, b.id, false, b.id === active.id)));
+        picker.hidden = false;
+        picker.disabled = builds.length < 2;
+        picker.onchange = function () {
+          try { localStorage.setItem(PREF_KEY, picker.value); } catch (e) { /* not remembered, still switches */ }
+          // Swapping the compiled library needs a fresh page; the editor code is saved, so nothing is lost.
+          const url = new URL(location.href);
+          url.searchParams.set("imgui", picker.value);
+          location.href = url.toString();
+        };
+      }
+
+      async function start() {
+        const builds = await listBuilds();
+        const want = preferred();
+        // Try the chosen version first, then the rest in order.
+        const order = builds.filter((b) => b.id === want).concat(builds.filter((b) => b.id !== want));
+        for (const build of order) {
+          try {
+            window.JSIMGUI = await import(build.base + "mod.js");
+            window.IMGUI_JS = { id: build.id, types: build.base };
+            setupPicker(builds, build);
+            break;
+          } catch (e) {
+            console.warn("Couldn't load jsimgui " + build.id + ", trying the next build", e);
+          }
+        }
+        if (!window.JSIMGUI) throw new Error("Couldn't load Dear ImGui");
+        for (const src of rest) await load(src);
+      }
+
+      start().catch(function (e) {
+        document.getElementById("status-text").textContent = e.message;
+        document.getElementById("status").dataset.kind = "error";
+      });
+    })();
+  </script>
+<script src="ac-test.js"></script></body>
+</html>
