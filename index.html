@@ -57,7 +57,9 @@
       cursor: pointer;
       transition: border-color 120ms ease-out, color 120ms ease-out;
     }
-    .version:hover { border-color: #3a3e48; color: var(--ink); }
+    .version:hover:enabled { border-color: #3a3e48; color: var(--ink); }
+    /* One build: a label, not a menu. */
+    .version:disabled { cursor: default; background-image: none; padding-right: 7px; opacity: 1; }
     .version:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
     .version option { background: var(--raised); color: var(--ink); }
 
@@ -265,10 +267,10 @@
     <ul class="asset-list" id="asset-list"></ul>
     <p class="empty" id="asset-empty">Nothing here yet.</p>
     <dl class="api">
-      <dt><code>assets.font(name, size = 16)</code><span>→ ImFont</span></dt>
-      <dd>Top level only, not inside <code>frame()</code>. Use with <code>ImGui.PushFont(f)</code> … <code>ImGui.PopFont()</code>.</dd>
-      <dt><code>assets.image(name)</code><span>→ { id, width, height, size }</span></dt>
-      <dd>Pass <code>id</code> to <code>ImGui.Image(img.id, img.size)</code>, <code>ImageButton</code>, or <code>drawList.AddImage</code>.</dd>
+      <dt><code>assets.font(name)</code><span>→ ImFont</span></dt>
+      <dd>Pick the size when drawing: <code>ImGui.PushFont(f, 24)</code> … <code>ImGui.PopFont()</code>. Any size, anywhere.</dd>
+      <dt><code>assets.image(name)</code><span>→ { ref, width, height, size }</span></dt>
+      <dd>Pass <code>ref</code> to <code>ImGui.Image(img.ref, img.size)</code>, <code>ImageButton</code>, or <code>drawList.AddImage</code>.</dd>
       <dt><code>assets.has(name)</code><span>→ boolean</span></dt>
       <dt><code>assets.fonts()</code>, <code>assets.images()</code><span>→ string[]</span></dt>
       <dd>Names of everything listed above. See <b>Examples → Assets</b>.</dd>
@@ -283,15 +285,11 @@
   </footer>
 
   <script>
-    // imgui-js: Dear ImGui compiled to WebAssembly, with JS bindings. lib/ is built in CI
-    // (scripts/build-imgui.sh); without it (opening the page locally) fall back to flyover's hosted build.
-    // Order matters: the UMD bundles must run before Monaco's AMD loader, or they skip setting window.ImGui.
+    // Dear ImGui via jsimgui (ES module). lib/<version>/ is compiled in CI (see imgui-versions.json);
+    // without it (opening the page locally) fall back to the same release published on npm.
     (function () {
       const PREF_KEY = "imgui-playground.version";
-      // flyover's own hosted build; always offered, and the fallback when lib/ has nothing.
-      const HOSTED = { id: "1.80", base: "https://flyover.github.io/imgui-js/dist/", types: "https://flyover.github.io/imgui-js/build/" };
-      // imgui_demo is a JS port of imgui_demo.cpp; the native demo is compiled out.
-      const bundles = ["imgui.umd.js", "imgui_impl.umd.js", "imgui_demo.umd.js"];
+      const NPM = { id: "1.92.8", base: "https://cdn.jsdelivr.net/npm/@mori2003/jsimgui@0.14.0/build/" };
       const rest = [
         "https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/loader.js", // Monaco: the editor VS Code is built on
         "assets.js",
@@ -314,10 +312,10 @@
           const response = await fetch("lib/versions.json");
           if (response.ok) built = await response.json();
         } catch (e) {
-          // No lib/ (opened locally): only the hosted build.
+          // No lib/ (opened locally): only the npm build.
         }
-        const builds = built.map((v) => ({ id: v.id, base: "lib/" + v.id + "/", types: "lib/" + v.id + "/types/" }));
-        if (!builds.some((b) => b.id === HOSTED.id)) builds.push(HOSTED);
+        const builds = built.map((v) => ({ id: v.id, base: new URL("lib/" + v.id + "/", location.href).href }));
+        if (!builds.length) builds.push(NPM);
         return builds;
       }
 
@@ -331,6 +329,7 @@
         const picker = document.getElementById("imgui-version");
         builds.forEach((b) => picker.appendChild(new Option("v" + b.id, b.id, false, b.id === active.id)));
         picker.hidden = false;
+        picker.disabled = builds.length < 2;
         picker.onchange = function () {
           try { localStorage.setItem(PREF_KEY, picker.value); } catch (e) { /* not remembered, still switches */ }
           // Swapping the compiled library needs a fresh page; the editor code is saved, so nothing is lost.
@@ -347,15 +346,15 @@
         const order = builds.filter((b) => b.id === want).concat(builds.filter((b) => b.id !== want));
         for (const build of order) {
           try {
-            for (const name of bundles) await load(build.base + name);
-            window.IMGUI_JS = build;
+            window.JSIMGUI = await import(build.base + "mod.js");
+            window.IMGUI_JS = { id: build.id, types: build.base };
             setupPicker(builds, build);
             break;
           } catch (e) {
-            console.warn(e.message + ", trying the next build");
+            console.warn("Couldn't load jsimgui " + build.id + ", trying the next build", e);
           }
         }
-        if (!window.IMGUI_JS) throw new Error("Couldn't load Dear ImGui");
+        if (!window.JSIMGUI) throw new Error("Couldn't load Dear ImGui");
         for (const src of rest) await load(src);
       }
 

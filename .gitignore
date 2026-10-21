@@ -1,6 +1,6 @@
 # Built in CI (see .github/workflows/pages.yml)
 lib/
 _site/
-imgui-js/
+jsimgui/
 out/
 built/

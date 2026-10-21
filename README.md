@@ -4,49 +4,53 @@ Write [Dear ImGui](https://github.com/ocornut/imgui) code in the browser and wat
 
 Live at **https://imgui.cloudwaddie.com**
 
-- Dear ImGui runs as WebAssembly through [flyover/imgui-js](https://github.com/flyover/imgui-js)
-- The editor is [Monaco](https://github.com/microsoft/monaco-editor) (the editor VS Code is built on), with ImGui autocomplete from the imgui-js typings
-- Draw lists (`GetWindowDrawList`, `GetBackgroundDrawList`, `GetForegroundDrawList`) and the ported `ShowDemoWindow` are available
+- Dear ImGui 1.92.8 compiled with Emscripten, through [jsimgui](https://github.com/mori2003/jsimgui) (built from [CloudWaddie/jsimgui](https://github.com/CloudWaddie/jsimgui))
+- The editor is [Monaco](https://github.com/microsoft/monaco-editor) (the editor VS Code is built on), with ImGui autocomplete from the jsimgui typings
+- Draw lists, the native `ShowDemoWindow`, tables, multi-select, and fonts at any size
+- Follows Dear ImGui's master branch: docking is not available
 
 ## Writing code
 
 Define a `frame()` function. It runs every frame. Top-level code runs once each time you apply, so top-level variables reset when you edit.
 
 ```js
-let show = true;
+const show = [true];
 
 function frame() {
   ImGui.Begin("Hello");
-  ImGui.Checkbox("Show demo", (v = show) => show = v);
+  ImGui.Checkbox("Show demo", show);
   ImGui.End();
-  if (show) ImGui.ShowDemoWindow((v = show) => show = v);
+  if (show[0]) ImGui.ShowDemoWindow(show);
 }
 ```
 
-Where C++ takes a pointer (`&value`), imgui-js takes an accessor: `(v = value) => value = v`.
+- Where C++ takes a pointer (`&value`), pass a one-element array (`[value]`) and read it back as `value[0]`.
+- Types and enums are globals, as in C++: `ImVec2`, `ImVec4`, `ImGuiCond.FirstUseEver`, `ImGuiWindowFlags.NoTitleBar`, and `IM_COL32(r, g, b, a)` for draw-list colors.
+- C++ overloads work as written: `ImGui.SetWindowPos("name", pos)`, `ImGui.PushStyleColor(idx, ImVec4)`, `ImGui.PushFont(font, size)`.
+- A failed `IM_ASSERT` is reported in the status bar with the line that caused it. The page keeps running.
 
 ## Fonts and images
 
 Add `.ttf`/`.otf` fonts and images from the **Assets** panel, or drop them anywhere on the page. They're kept in your browser (IndexedDB) and available to your code as `assets`:
 
 ```js
-const title = assets.font("Inter.ttf", 28); // top level only: Dear ImGui bakes each size up front
-const logo = assets.image("logo.png");
+const title = assets.font("Inter.ttf"); // ImFont
+const logo = assets.image("logo.png");  // { ref, width, height, size }
 
 function frame() {
   ImGui.Begin("Assets");
-  ImGui.PushFont(title);
+  ImGui.PushFont(title, 28); // any size, even one that changes every frame
   ImGui.Text("Hello");
   ImGui.PopFont();
-  ImGui.Image(logo.id, logo.size);
+  ImGui.Image(logo.ref, logo.size);
   ImGui.End();
 }
 ```
 
 ## Dear ImGui versions
 
-The version picker next to the title switches builds. Each entry in `imgui-versions.json` names a branch of [CloudWaddie/imgui-js](https://github.com/CloudWaddie/imgui-js) and an Emscripten version. The Pages workflow compiles each one (`scripts/build-imgui.sh`), caches it by commit, and publishes it under `lib/<version>/`. flyover's hosted 1.80 build is always available too.
+The version label next to the title becomes a picker when there's more than one build. Each entry in `imgui-versions.json` names a branch of a jsimgui repository plus the Emscripten and Node versions to build it with. The Pages workflow compiles each one with `scripts/build-jsimgui.sh`, caches it by commit, and publishes it under `lib/<version>/`.
 
 ## Running locally
 
-It's a static site: serve the folder (`python -m http.server`). Without a CI build in `lib/` it uses the hosted 1.80 build.
+It's a static site: serve the folder (`python -m http.server`). Without a CI build in `lib/`, it loads the same jsimgui release from npm.

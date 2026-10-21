@@ -1,16 +1,12 @@
 // Uploaded fonts and images. Kept in IndexedDB so they survive reloads,
 // and exposed to user code as the `assets` object.
-window.createPlaygroundAssets = function (onChange) {
+window.createPlaygroundAssets = function (jsimgui, gl, onChange) {
+  const { ImGui, ImGuiImplWeb, ImVec2, ImFont } = jsimgui;
   const DB_NAME = "imgui-playground";
   const STORE = "assets";
   const FONT_EXT = /\.(ttf|otf|ttc)$/i;
-  const MIN_FONT_SIZE = 6;
-  const MAX_FONT_SIZE = 128;
 
-  const entries = new Map(); // name -> { name, kind, type, bytes, texture?, width?, height?, previewUrl? }
-  const fontCache = new Map(); // "name@size" -> ImFont
-  let atlasDirty = false;
-  let inFrame = false;
+  const entries = new Map(); // name -> { name, kind, type, bytes, sample?, font? | texture, ref, width, height, size, previewUrl }
 
   // --- persistence (best effort: blocked storage just means no persistence) ---
 
@@ -68,22 +64,15 @@ window.createPlaygroundAssets = function (onChange) {
       URL.revokeObjectURL(url);
       throw e;
     }
-    // SVGs without a width/height attribute report 0; give them a usable size.
-    if (!img.naturalWidth || !img.naturalHeight) {
-      img.width = 256;
-      img.height = 256;
-    }
     return { img: img, url: url };
   }
 
   function uploadTexture(img) {
-    const gl = ImGui_Impl.gl;
-    if (!gl) throw new Error("Images need WebGL, which isn't available here.");
-    const width = img.naturalWidth || img.width;
-    const height = img.naturalHeight || img.height;
+    // SVGs without a width/height attribute report 0; give them a usable size.
+    const width = img.naturalWidth || 256;
+    const height = img.naturalHeight || 256;
     let source = img;
-    if (!img.naturalWidth) {
-      // Rasterize size-less SVGs through a canvas at the fallback size.
+    if (!img.naturalWidth || !img.naturalHeight) {
       source = document.createElement("canvas");
       source.width = width;
       source.height = height;
@@ -98,16 +87,26 @@ window.createPlaygroundAssets = function (onChange) {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
     gl.bindTexture(gl.TEXTURE_2D, null);
-    return { texture: texture, width: width, height: height };
+    return { texture: texture, ref: ImGuiImplWeb.RegisterTexture(texture), width: width, height: height };
   }
 
+  let fontSerial = 0;
+
+  // Runs outside the render loop (uploads, startup), so adding to the font atlas is safe.
   async function materialize(record) {
     const entry = Object.assign({}, record);
     if (entry.kind === "font") {
       checkFont(entry.bytes, entry.name);
+      // A unique virtual file per load, so re-uploading a name never clobbers a font still in use.
+      const file = "font-" + (++fontSerial) + "-" + entry.name.replace(/[^A-Za-z0-9._-]/g, "_");
+      ImGuiImplWeb.LoadFont(file, new Uint8Array(entry.bytes.slice(0)));
+      const font = ImGui.GetIO().Fonts.AddFontFromFileTTF(file);
+      // jsimgui 0.14 returns the raw native object here instead of an ImFont, and PushFont
+      // then silently ignores it; wrap it so it behaves like every other ImFont.
+      entry.font = font instanceof ImFont ? font : ImFont.From(font);
       try {
         // Lets the panel preview the face; ImGui itself uses the raw bytes.
-        const face = new FontFace("asset-" + entries.size + "-" + Date.now(), entry.bytes.slice(0));
+        const face = new FontFace("asset-" + fontSerial, entry.bytes.slice(0));
         await face.load();
         document.fonts.add(face);
         entry.previewFamily = face.family;
@@ -118,20 +117,16 @@ window.createPlaygroundAssets = function (onChange) {
       const decoded = await decodeImage(entry.bytes, entry.type);
       Object.assign(entry, uploadTexture(decoded.img));
       entry.previewUrl = decoded.url;
-      entry.size = new ImGui.Vec2(entry.width, entry.height);
+      entry.size = new ImVec2(entry.width, entry.height);
     }
     return entry;
   }
 
   function release(entry) {
     if (!entry) return;
-    if (entry.texture && ImGui_Impl.gl) ImGui_Impl.gl.deleteTexture(entry.texture);
+    // Fonts stay in the atlas and textures stay alive: the last working frame() may still be
+    // drawing with them until the edited code compiles. Only the preview URL is ours to free.
     if (entry.previewUrl) URL.revokeObjectURL(entry.previewUrl);
-    // Fonts stay in the atlas until reload (1.80 can't remove a single font), but drop our cache
-    // so a re-upload under the same name is loaded fresh.
-    for (const key of Array.from(fontCache.keys())) {
-      if (key.startsWith(entry.name + "@")) fontCache.delete(key);
-    }
   }
 
   function kindOf(file) {
@@ -151,25 +146,12 @@ window.createPlaygroundAssets = function (onChange) {
   }
 
   const api = {
-    font(name, size) {
-      const entry = need(name, "font");
-      size = Math.round(Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, size || 16)));
-      const key = name + "@" + size;
-      if (fontCache.has(key)) return fontCache.get(key);
-      if (inFrame) {
-        // The atlas is locked between NewFrame() and Render().
-        throw new Error("Call assets.font() at the top level, not inside frame().");
-      }
-      const cfg = new ImGui.FontConfig();
-      cfg.Name = name + ", " + size + "px";
-      const font = ImGui.GetIO().Fonts.AddFontFromMemoryTTF(entry.bytes.slice(0), size, cfg);
-      fontCache.set(key, font);
-      atlasDirty = true;
-      return font;
+    font(name) {
+      return need(name, "font").font;
     },
     image(name) {
       const entry = need(name, "image");
-      return { id: entry.texture, width: entry.width, height: entry.height, size: entry.size };
+      return { ref: entry.ref, width: entry.width, height: entry.height, size: entry.size };
     },
     has(name) {
       return entries.has(name);
@@ -239,14 +221,6 @@ window.createPlaygroundAssets = function (onChange) {
     }
   }
 
-  // Rebuild the font texture after new fonts were added. Must run outside a frame.
-  function flush() {
-    if (!atlasDirty) return;
-    atlasDirty = false;
-    ImGui_Impl.DestroyFontsTexture();
-    ImGui_Impl.CreateFontsTexture();
-  }
-
   return {
     api: api,
     add: add,
@@ -254,7 +228,5 @@ window.createPlaygroundAssets = function (onChange) {
     list: list,
     load: load,
     loadSamples: loadSamples,
-    flush: flush,
-    setInFrame(value) { inFrame = value; },
   };
 };

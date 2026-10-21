@@ -24,7 +24,7 @@ jobs:
       - id: read
         run: echo "matrix=$(jq -c . imgui-versions.json)" >> "$GITHUB_OUTPUT"
 
-  # One build per entry in imgui-versions.json. Each is cached by the exact imgui-js commit,
+  # One build per entry in imgui-versions.json. Each is cached by the exact jsimgui commit,
   # so a version only recompiles when its branch moves (or the build recipe changes).
   build:
     needs: versions
@@ -41,10 +41,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: out
-          key: imgui-js-${{ steps.rev.outputs.sha }}-emsdk-${{ matrix.version.emsdk }}-${{ hashFiles('scripts/build-imgui.sh') }}
+          key: jsimgui-${{ steps.rev.outputs.sha }}-emsdk-${{ matrix.version.emsdk }}-node-${{ matrix.version.node }}-${{ hashFiles('scripts/build-jsimgui.sh') }}
 
       - if: steps.cache.outputs.cache-hit != 'true'
-        run: git clone --recursive --depth 1 --shallow-submodules --branch ${{ matrix.version.ref }} https://github.com/${{ matrix.version.repo }}.git imgui-js
+        run: git clone --recursive --depth 1 --shallow-submodules --branch ${{ matrix.version.ref }} https://github.com/${{ matrix.version.repo }}.git jsimgui
       - if: steps.cache.outputs.cache-hit != 'true'
         uses: mymindstorm/setup-emsdk@v14
         with:
@@ -52,9 +52,9 @@ jobs:
       - if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: ${{ matrix.version.node }}
       - if: steps.cache.outputs.cache-hit != 'true'
-        run: bash scripts/build-imgui.sh imgui-js out
+        run: bash scripts/build-jsimgui.sh jsimgui out
 
       - uses: actions/upload-artifact@v4
         with:

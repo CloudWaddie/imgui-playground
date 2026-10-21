@@ -1,8 +1,9 @@
 [
   {
-    "id": "1.86",
-    "repo": "CloudWaddie/imgui-js",
-    "ref": "master",
-    "emsdk": "3.1.31"
+    "id": "1.92.8",
+    "repo": "CloudWaddie/jsimgui",
+    "ref": "main",
+    "emsdk": "5.0.7",
+    "node": "26.1.0"
   }
 ]
