@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ImGui Playground</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      color-scheme: dark;
+      /* Neutrals lean slightly toward the accent hue; the accent is Dear ImGui's own default blue. */
+      --bg: #131418;
+      --chrome: #1a1c21;
+      --raised: #23262d;
+      --line: #2c2f37;
+      --ink: #e3e5ea;
+      --ink-2: #a3a8b4;
+      --ink-3: #7d8391;
+      --accent: #4296fa;
+      --accent-ink: #0b1626;
+      --ok: #5fc48a;
+      --warn: #e8b34b;
+      --err: #f0716a;
+      --err-bg: #3a1d1f;
+      --mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
+      --split: 50%;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; }
+    body {
+      display: grid;
+      grid-template-rows: 44px 1fr 26px;
+      background: var(--bg);
+      color: var(--ink);
+      font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+      overflow: hidden;
+    }
+
+    /* Top bar */
+    .bar {
+      display: flex; align-items: center; gap: 8px;
+      padding: 0 10px 0 14px;
+      background: var(--chrome);
+      border-bottom: 1px solid var(--line);
+    }
+    .brand { display: flex; align-items: center; gap: 9px; margin-right: auto; min-width: 0; }
+    .brand svg { flex: none; }
+    .brand b { font-weight: 600; letter-spacing: -0.01em; }
+    .brand span { color: var(--ink-3); font-family: var(--mono); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    .control {
+      height: 28px; padding: 0 10px;
+      display: inline-flex; align-items: center; gap: 6px;
+      background: transparent; color: var(--ink-2);
+      border: 1px solid transparent; border-radius: 5px;
+      font: inherit; cursor: pointer;
+      transition: background-color 120ms ease-out, color 120ms ease-out, border-color 120ms ease-out;
+    }
+    .control:hover { background: var(--raised); color: var(--ink); }
+    .control:focus-visible, .toggle input:focus-visible + i { outline: 2px solid var(--accent); outline-offset: 1px; }
+    select.control { border-color: var(--line); padding-right: 6px; }
+    select.control option { background: var(--raised); color: var(--ink); }
+    .primary { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+    .primary:hover { background: #63a9fb; color: var(--accent-ink); }
+    kbd { font-family: var(--mono); font-size: 11px; opacity: 0.7; }
+
+    .toggle { display: inline-flex; align-items: center; gap: 7px; padding: 0 8px; color: var(--ink-2); cursor: pointer; user-select: none; }
+    .toggle input { position: absolute; opacity: 0; pointer-events: none; }
+    .toggle i { width: 26px; height: 15px; border-radius: 8px; background: var(--line); position: relative; transition: background-color 150ms ease-out; }
+    .toggle i::after { content: ""; position: absolute; top: 2px; left: 2px; width: 11px; height: 11px; border-radius: 50%; background: var(--ink-2); transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1), background-color 150ms ease-out; }
+    .toggle input:checked + i { background: var(--accent); }
+    .toggle input:checked + i::after { transform: translateX(11px); background: #fff; }
+    .sep { width: 1px; height: 18px; background: var(--line); margin: 0 4px; }
+
+    /* Workspace */
+    main { display: grid; grid-template-columns: var(--split) 5px 1fr; min-height: 0; }
+    .pane { display: grid; grid-template-rows: 30px 1fr; min-width: 0; min-height: 0; }
+    .pane-head {
+      display: flex; align-items: center; gap: 8px;
+      padding: 0 12px;
+      background: var(--chrome);
+      border-bottom: 1px solid var(--line);
+      color: var(--ink-3); font-family: var(--mono); font-size: 11.5px;
+    }
+    .pane-head .tab { color: var(--ink); }
+    .pane-head .meta { margin-left: auto; }
+    #editor { min-width: 0; min-height: 0; }
+
+    .divider { background: var(--line); cursor: col-resize; position: relative; }
+    .divider::after { content: ""; position: absolute; inset: 0 -4px; }
+    .divider:hover, .divider.dragging { background: var(--accent); }
+
+    #output {
+      position: relative; min-width: 0; min-height: 0; overflow: hidden;
+      background-color: #0e0f12;
+      background-image: radial-gradient(circle at 1px 1px, #262932 1px, transparent 0);
+      background-size: 20px 20px;
+    }
+    #output canvas { position: absolute; inset: 0; width: 100%; height: 100%; outline: none; }
+    body.resizing iframe, body.resizing canvas { pointer-events: none; }
+    body.resizing { cursor: col-resize; user-select: none; }
+
+    /* Status bar */
+    .status {
+      display: flex; align-items: center; gap: 16px;
+      padding: 0 12px;
+      background: var(--chrome);
+      border-top: 1px solid var(--line);
+      font-family: var(--mono); font-size: 11.5px; color: var(--ink-2);
+      transition: background-color 200ms ease-out;
+    }
+    .status .msg { display: flex; align-items: center; gap: 8px; min-width: 0; margin-right: auto; }
+    .status .msg span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .status .dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); }
+    .status[data-kind="ok"] .dot { background: var(--ok); }
+    .status[data-kind="warn"] .dot { background: var(--warn); }
+    .status[data-kind="error"] { background: var(--err-bg); color: #ffd9d6; }
+    .status[data-kind="error"] .dot { background: var(--err); }
+    .status .stat { color: var(--ink-3); white-space: nowrap; }
+
+    @media (max-width: 760px) {
+      body { grid-template-rows: auto 1fr 26px; }
+      .bar { flex-wrap: wrap; padding: 6px 10px; row-gap: 6px; }
+      .brand span, .sep, .hide-sm { display: none; }
+      main { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
+      .divider { display: none; }
+      .pane + .pane { border-top: 1px solid var(--line); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      * { transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <header class="bar">
+    <div class="brand">
+      <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+        <rect x="1.5" y="2.5" width="15" height="13" rx="2" fill="none" stroke="#4296fa" stroke-width="1.5"/>
+        <rect x="1.5" y="2.5" width="15" height="4" rx="2" fill="#4296fa"/>
+        <rect x="4" y="9" width="6" height="1.6" rx=".8" fill="#a3a8b4"/>
+        <rect x="4" y="12" width="9" height="1.6" rx=".8" fill="#a3a8b4"/>
+      </svg>
+      <b>ImGui Playground</b>
+      <span id="version">loading wasm…</span>
+    </div>
+
+    <select id="examples" class="control" aria-label="Load example">
+      <option value="" selected disabled>Examples</option>
+    </select>
+    <label class="toggle" title="Apply changes as you type">
+      <input type="checkbox" id="live" checked>
+      <i></i><span class="hide-sm">Hot reload</span>
+    </label>
+    <span class="sep"></span>
+    <button id="reset" class="control" title="Discard your code and load the default example">Reset</button>
+    <button id="apply" class="control primary" title="Apply (Ctrl+S)">Apply <kbd class="hide-sm">Ctrl S</kbd></button>
+  </header>
+
+  <main id="workspace">
+    <section class="pane">
+      <div class="pane-head"><span class="tab">main.js</span><span class="meta">frame() runs every frame</span></div>
+      <div id="editor"></div>
+    </section>
+    <div class="divider" id="divider" role="separator" aria-orientation="vertical" aria-label="Resize panes"></div>
+    <section class="pane">
+      <div class="pane-head"><span class="tab">Preview</span><span class="meta" id="size"></span></div>
+      <div id="output"></div>
+    </section>
+  </main>
+
+  <footer class="status" id="status" data-kind="">
+    <div class="msg"><i class="dot"></i><span id="status-text">Loading ImGui and editor…</span></div>
+    <span class="stat" id="fps"></span>
+  </footer>
+
+  <!-- flyover/imgui-js: Dear ImGui compiled to WebAssembly, with JS bindings.
+       Load before Monaco: Monaco's AMD loader would make these UMD bundles skip setting window.ImGui. -->
+  <script src="https://flyover.github.io/imgui-js/dist/imgui.umd.js"></script>
+  <script src="https://flyover.github.io/imgui-js/dist/imgui_impl.umd.js"></script>
+  <!-- JS port of imgui_demo.cpp; the wasm is built with IMGUI_DISABLE_DEMO_WINDOWS -->
+  <script src="https://flyover.github.io/imgui-js/dist/imgui_demo.umd.js"></script>
+  <!-- Monaco is the editor VS Code is built on -->
+  <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/loader.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
