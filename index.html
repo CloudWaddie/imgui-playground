@@ -48,7 +48,18 @@
     .brand { display: flex; align-items: center; gap: 9px; margin-right: auto; min-width: 0; }
     .brand svg { flex: none; }
     .brand b { font-weight: 600; letter-spacing: -0.01em; }
-    .brand span { color: var(--ink-3); font-family: var(--mono); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .version {
+      appearance: none; -webkit-appearance: none;
+      height: 20px; padding: 0 18px 0 7px; border-radius: 10px;
+      border: 1px solid var(--line);
+      background: var(--raised) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath d='M1 1l3 3 3-3' fill='none' stroke='%237d8391' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 6px center;
+      color: var(--ink-2); font: 500 11px/1 var(--mono);
+      cursor: pointer;
+      transition: border-color 120ms ease-out, color 120ms ease-out;
+    }
+    .version:hover { border-color: #3a3e48; color: var(--ink); }
+    .version:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .version option { background: var(--raised); color: var(--ink); }
 
     .control {
       height: 28px; padding: 0 10px;
@@ -191,7 +202,7 @@
     @media (max-width: 760px) {
       body { grid-template-rows: auto 1fr 26px; }
       .bar { flex-wrap: wrap; padding: 6px 10px; row-gap: 6px; }
-      .brand span, .sep, .hide-sm { display: none; }
+      .sep, .hide-sm { display: none; }
       main { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
       .divider { display: none; }
       .pane + .pane { border-top: 1px solid var(--line); }
@@ -211,6 +222,7 @@
         <rect x="4" y="12" width="9" height="1.6" rx=".8" fill="#a3a8b4"/>
       </svg>
       <b>ImGui Playground</b>
+      <select id="imgui-version" class="version" aria-label="Dear ImGui version" title="Dear ImGui version" hidden></select>
     </div>
 
     <select id="examples" class="control" aria-label="Load example">
@@ -270,15 +282,88 @@
     <span class="stat" id="fps"></span>
   </footer>
 
-  <!-- flyover/imgui-js: Dear ImGui compiled to WebAssembly, with JS bindings.
-       Load before Monaco: Monaco's AMD loader would make these UMD bundles skip setting window.ImGui. -->
-  <script src="https://flyover.github.io/imgui-js/dist/imgui.umd.js"></script>
-  <script src="https://flyover.github.io/imgui-js/dist/imgui_impl.umd.js"></script>
-  <!-- JS port of imgui_demo.cpp; the wasm is built with IMGUI_DISABLE_DEMO_WINDOWS -->
-  <script src="https://flyover.github.io/imgui-js/dist/imgui_demo.umd.js"></script>
-  <!-- Monaco is the editor VS Code is built on -->
-  <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/loader.js"></script>
-  <script src="assets.js"></script>
-  <script src="app.js"></script>
+  <script>
+    // imgui-js: Dear ImGui compiled to WebAssembly, with JS bindings. lib/ is built in CI
+    // (scripts/build-imgui.sh); without it (opening the page locally) fall back to flyover's hosted build.
+    // Order matters: the UMD bundles must run before Monaco's AMD loader, or they skip setting window.ImGui.
+    (function () {
+      const PREF_KEY = "imgui-playground.version";
+      // flyover's own hosted build; always offered, and the fallback when lib/ has nothing.
+      const HOSTED = { id: "1.80", base: "https://flyover.github.io/imgui-js/dist/", types: "https://flyover.github.io/imgui-js/build/" };
+      // imgui_demo is a JS port of imgui_demo.cpp; the native demo is compiled out.
+      const bundles = ["imgui.umd.js", "imgui_impl.umd.js", "imgui_demo.umd.js"];
+      const rest = [
+        "https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/loader.js", // Monaco: the editor VS Code is built on
+        "assets.js",
+        "app.js",
+      ];
+
+      function load(src) {
+        return new Promise(function (resolve, reject) {
+          const s = document.createElement("script");
+          s.src = src;
+          s.onload = resolve;
+          s.onerror = () => reject(new Error("Couldn't load " + src));
+          document.body.appendChild(s);
+        });
+      }
+
+      async function listBuilds() {
+        let built = [];
+        try {
+          const response = await fetch("lib/versions.json");
+          if (response.ok) built = await response.json();
+        } catch (e) {
+          // No lib/ (opened locally): only the hosted build.
+        }
+        const builds = built.map((v) => ({ id: v.id, base: "lib/" + v.id + "/", types: "lib/" + v.id + "/types/" }));
+        if (!builds.some((b) => b.id === HOSTED.id)) builds.push(HOSTED);
+        return builds;
+      }
+
+      function preferred() {
+        const fromUrl = new URLSearchParams(location.search).get("imgui");
+        if (fromUrl) return fromUrl;
+        try { return localStorage.getItem(PREF_KEY); } catch (e) { return null; }
+      }
+
+      function setupPicker(builds, active) {
+        const picker = document.getElementById("imgui-version");
+        builds.forEach((b) => picker.appendChild(new Option("v" + b.id, b.id, false, b.id === active.id)));
+        picker.hidden = false;
+        picker.onchange = function () {
+          try { localStorage.setItem(PREF_KEY, picker.value); } catch (e) { /* not remembered, still switches */ }
+          // Swapping the compiled library needs a fresh page; the editor code is saved, so nothing is lost.
+          const url = new URL(location.href);
+          url.searchParams.set("imgui", picker.value);
+          location.href = url.toString();
+        };
+      }
+
+      async function start() {
+        const builds = await listBuilds();
+        const want = preferred();
+        // Try the chosen version first, then the rest in order.
+        const order = builds.filter((b) => b.id === want).concat(builds.filter((b) => b.id !== want));
+        for (const build of order) {
+          try {
+            for (const name of bundles) await load(build.base + name);
+            window.IMGUI_JS = build;
+            setupPicker(builds, build);
+            break;
+          } catch (e) {
+            console.warn(e.message + ", trying the next build");
+          }
+        }
+        if (!window.IMGUI_JS) throw new Error("Couldn't load Dear ImGui");
+        for (const src of rest) await load(src);
+      }
+
+      start().catch(function (e) {
+        document.getElementById("status-text").textContent = e.message;
+        document.getElementById("status").dataset.kind = "error";
+      });
+    })();
+  </script>
 </body>
 </html>

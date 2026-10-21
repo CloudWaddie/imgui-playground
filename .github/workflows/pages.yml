@@ -15,16 +15,87 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  versions:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.read.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: read
+        run: echo "matrix=$(jq -c . imgui-versions.json)" >> "$GITHUB_OUTPUT"
+
+  # One build per entry in imgui-versions.json. Each is cached by the exact imgui-js commit,
+  # so a version only recompiles when its branch moves (or the build recipe changes).
+  build:
+    needs: versions
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON(needs.versions.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: rev
+        run: echo "sha=$(git ls-remote https://github.com/${{ matrix.version.repo }}.git ${{ matrix.version.ref }} | cut -f1 | head -1)" >> "$GITHUB_OUTPUT"
+      - id: cache
+        uses: actions/cache@v4
+        with:
+          path: out
+          key: imgui-js-${{ steps.rev.outputs.sha }}-emsdk-${{ matrix.version.emsdk }}-${{ hashFiles('scripts/build-imgui.sh') }}
+
+      - if: steps.cache.outputs.cache-hit != 'true'
+        run: git clone --recursive --depth 1 --shallow-submodules --branch ${{ matrix.version.ref }} https://github.com/${{ matrix.version.repo }}.git imgui-js
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: ${{ matrix.version.emsdk }}
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+      - if: steps.cache.outputs.cache-hit != 'true'
+        run: bash scripts/build-imgui.sh imgui-js out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: imgui-${{ matrix.version.id }}
+          path: out
+
   deploy:
+    needs: build
+    # Deploy whatever built; the page falls back to the hosted 1.80 build if nothing did.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: built
+          pattern: imgui-*
+
+      - name: Assemble site
+        run: |
+          mkdir -p _site/lib
+          cp -r index.html app.js assets.js CNAME samples _site/
+          # Publish each built version under lib/<id>/ and list only the ones that exist.
+          for id in $(jq -r '.[].id' imgui-versions.json); do
+            if [ -f "built/imgui-$id/imgui.umd.js" ]; then
+              cp -r "built/imgui-$id" "_site/lib/$id"
+            else
+              echo "::warning::imgui $id did not build; leaving it out"
+            fi
+          done
+          # Newest first; the page defaults to the first entry.
+          ls _site/lib | jq -R '{id: .}' | jq -s 'sort_by(.id | split(".") | map(tonumber)) | reverse' > versions.json
+          mv versions.json _site/lib/versions.json
+          cat _site/lib/versions.json
+
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: .
+          path: _site
       - id: deployment
         uses: actions/deploy-pages@v4

@@ -1,7 +1,7 @@
 // ImGui Playground: Monaco editor on the left, Dear ImGui (WASM) canvas on the right.
 // Code in the editor is compiled on every change and swapped into the running loop.
 (function () {
-  const IMGUI_BASE = "https://flyover.github.io/imgui-js/";
+  const IMGUI_TYPES = window.IMGUI_JS.types; // set by the loader in index.html
   const MONACO_BASE = "https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs";
   const STORAGE_CODE = "imgui-playground.code";
   const STORAGE_SPLIT = "imgui-playground.split";
@@ -103,7 +103,7 @@ function frame() {
 // Upload your own and change the names below.
 //
 //   assets.font(name, size = 16)  -> ImFont, for ImGui.PushFont(f) ... ImGui.PopFont()
-//                                    top level only: Dear ImGui 1.80 bakes each size up front
+//                                    top level only: Dear ImGui bakes each size up front
 //   assets.image(name)            -> { id, width, height, size }, e.g. ImGui.Image(img.id, img.size)
 //   assets.has(name)              -> boolean
 //   assets.fonts(), assets.images() -> string[] of file names
@@ -350,14 +350,14 @@ function frame() {
 
   // Monaco gets the real imgui-js typings so ImGui.* autocompletes.
   async function loadTypings() {
-    const fetchText = (path) => fetch(IMGUI_BASE + path).then((r) => {
+    const fetchText = (path) => fetch(IMGUI_TYPES + path).then((r) => {
       if (!r.ok) throw new Error(path + " " + r.status);
       return r.text();
     });
     const [emscripten, bind, imgui] = await Promise.all([
-      fetchText("build/emscripten.d.ts"),
-      fetchText("build/bind-imgui.d.ts"),
-      fetchText("build/imgui.d.ts"),
+      fetchText("emscripten.d.ts"),
+      fetchText("bind-imgui.d.ts"),
+      fetchText("imgui.d.ts"),
     ]);
     // Wrap each file as an ambient module; "declare" is implied inside one.
     const wrap = (name, text) => "declare module \"" + name + "\" {\n" +

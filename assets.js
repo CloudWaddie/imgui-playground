@@ -14,14 +14,19 @@ window.createPlaygroundAssets = function (onChange) {
 
   // --- persistence (best effort: blocked storage just means no persistence) ---
 
+  // Some browsers (headless, locked-down profiles) never answer indexedDB.open; don't hang startup on it.
+  const DB_TIMEOUT_MS = 3000;
+
   let dbPromise = null;
   function openDb() {
     if (!dbPromise) {
       dbPromise = new Promise(function (resolve, reject) {
+        const timer = setTimeout(() => reject(new Error("IndexedDB didn't respond")), DB_TIMEOUT_MS);
         const req = indexedDB.open(DB_NAME, 1);
         req.onupgradeneeded = () => req.result.createObjectStore(STORE, { keyPath: "name" });
-        req.onsuccess = () => resolve(req.result);
-        req.onerror = () => reject(req.error);
+        req.onsuccess = () => { clearTimeout(timer); resolve(req.result); };
+        req.onerror = () => { clearTimeout(timer); reject(req.error); };
+        req.onblocked = () => { clearTimeout(timer); reject(new Error("IndexedDB is blocked by another tab")); };
       });
     }
     return dbPromise;
