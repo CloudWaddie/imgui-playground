@@ -73,6 +73,67 @@
     .toggle input:checked + i { background: var(--accent); }
     .toggle input:checked + i::after { transform: translateX(11px); background: #fff; }
     .sep { width: 1px; height: 18px; background: var(--line); margin: 0 4px; }
+    .count:not(:empty) {
+      min-width: 17px; height: 17px; padding: 0 5px; border-radius: 9px;
+      display: inline-grid; place-items: center;
+      background: var(--raised); color: var(--ink); font-family: var(--mono); font-size: 10.5px;
+    }
+    .control.icon { width: 28px; padding: 0; justify-content: center; }
+
+    /* Assets popover */
+    .panel {
+      position: fixed; inset: 50px 10px auto auto; margin: 0;
+      width: min(380px, calc(100vw - 20px)); max-height: calc(100vh - 90px); overflow: auto;
+      padding: 0; border: 1px solid var(--line); border-radius: 8px;
+      background: var(--chrome); color: var(--ink);
+      box-shadow: 0 18px 50px -12px rgb(0 0 0 / 0.7);
+      opacity: 0; transform: translateY(-4px);
+      transition: opacity 160ms ease-out, transform 220ms cubic-bezier(0.22, 1, 0.36, 1), overlay 160ms allow-discrete, display 160ms allow-discrete;
+    }
+    .panel:popover-open { opacity: 1; transform: none; }
+    @starting-style { .panel:popover-open { opacity: 0; transform: translateY(-4px); } }
+    .panel-head { padding: 14px 16px 12px; display: grid; gap: 3px; }
+    .panel-head span { color: var(--ink-2); font-size: 12px; }
+    .drop {
+      margin: 0 12px; padding: 16px;
+      display: grid; gap: 4px; justify-items: center; text-align: center;
+      border: 1px dashed #3a3e48; border-radius: 6px;
+      color: var(--ink-2); cursor: pointer;
+      transition: border-color 120ms ease-out, background-color 120ms ease-out;
+    }
+    .drop:hover, .drop:focus-within { border-color: var(--accent); background: rgb(66 150 250 / 0.06); }
+    .drop b { color: var(--accent); font-weight: 600; }
+    .drop small { color: var(--ink-3); font-size: 11.5px; }
+    .drop input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+    .asset-list { list-style: none; margin: 10px 0 0; padding: 0 6px 6px; }
+    .asset-list li {
+      display: grid; grid-template-columns: 36px 1fr auto auto; align-items: center; gap: 10px;
+      padding: 6px; border-radius: 6px;
+    }
+    .asset-list li:hover { background: var(--raised); }
+    .preview {
+      width: 36px; height: 36px; border-radius: 5px; overflow: hidden;
+      display: grid; place-items: center;
+      background: #0e0f12; border: 1px solid var(--line);
+      font-size: 17px; color: var(--ink);
+    }
+    .preview img { width: 100%; height: 100%; object-fit: cover; }
+    .info { display: grid; min-width: 0; }
+    .info b { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .info span { color: var(--ink-3); font-size: 11.5px; font-family: var(--mono); }
+    .empty { margin: 12px 16px 16px; color: var(--ink-3); font-size: 12px; line-height: 1.5; }
+    .empty code { font-family: var(--mono); font-size: 11.5px; color: var(--ink-2); }
+
+    .drop-overlay {
+      position: fixed; inset: 0; z-index: 10;
+      display: grid; place-items: center;
+      background: rgb(19 20 24 / 0.82);
+      outline: 2px dashed var(--accent); outline-offset: -12px;
+      opacity: 0; pointer-events: none;
+      transition: opacity 140ms ease-out;
+    }
+    .drop-overlay span { font-size: 15px; font-weight: 600; color: var(--ink); }
+    body.dropping .drop-overlay { opacity: 1; }
 
     /* Workspace */
     main { display: grid; grid-template-columns: var(--split) 5px 1fr; min-height: 0; }
@@ -148,6 +209,9 @@
     <select id="examples" class="control" aria-label="Load example">
       <option value="" selected disabled>Examples</option>
     </select>
+    <button class="control" popovertarget="assets-panel" title="Fonts and images for your code">
+      Assets <span class="count" id="asset-count"></span>
+    </button>
     <label class="toggle" title="Apply changes as you type">
       <input type="checkbox" id="live" checked>
       <i></i><span class="hide-sm">Hot reload</span>
@@ -169,6 +233,22 @@
     </section>
   </main>
 
+  <div id="assets-panel" class="panel" popover>
+    <div class="panel-head">
+      <b>Assets</b>
+      <span>Fonts and images for your code. Stored in this browser.</span>
+    </div>
+    <label class="drop">
+      <input type="file" id="asset-file" multiple accept=".ttf,.otf,.ttc,image/*">
+      <span><b>Choose files</b> or drop them anywhere</span>
+      <small>.ttf / .otf fonts &middot; png, jpg, gif, webp, svg</small>
+    </label>
+    <ul class="asset-list" id="asset-list"></ul>
+    <p class="empty" id="asset-empty">Nothing here yet. Use <code>assets.font(name, size)</code> and <code>assets.image(name)</code> once you've added some.</p>
+  </div>
+
+  <div class="drop-overlay" aria-hidden="true"><span>Drop to add to Assets</span></div>
+
   <footer class="status" id="status" data-kind="">
     <div class="msg"><i class="dot"></i><span id="status-text">Loading ImGui and editor…</span></div>
     <span class="stat" id="fps"></span>
@@ -182,6 +262,7 @@
   <script src="https://flyover.github.io/imgui-js/dist/imgui_demo.umd.js"></script>
   <!-- Monaco is the editor VS Code is built on -->
   <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/loader.js"></script>
+  <script src="assets.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

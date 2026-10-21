@@ -99,6 +99,49 @@ function frame() {
   }
 }
 `,
+    "Fonts & images": `// Upload fonts (.ttf/.otf) and images from Assets, or drop them anywhere on the page.
+// assets.font() must run at the top level: Dear ImGui 1.80 bakes each font size up front.
+const fontName = assets.fonts()[0];
+const imageName = assets.images()[0];
+
+const big = fontName ? assets.font(fontName, 32) : null;
+const body = fontName ? assets.font(fontName, 17) : null;
+const pic = imageName ? assets.image(imageName) : null;
+
+function frame() {
+  ImGui.SetNextWindowPos(new ImGui.Vec2(40, 40), ImGui.Cond.FirstUseEver);
+  ImGui.SetNextWindowSize(new ImGui.Vec2(420, 380), ImGui.Cond.FirstUseEver);
+  ImGui.Begin("Fonts & images");
+
+  if (big) {
+    ImGui.PushFont(big);
+    ImGui.Text("Hello, ImGui");
+    ImGui.PopFont();
+    ImGui.PushFont(body);
+    ImGui.TextWrapped("This is " + fontName + " at 17px. The quick brown fox jumps over the lazy dog.");
+    ImGui.PopFont();
+  } else {
+    ImGui.TextDisabled("No font uploaded yet.");
+  }
+
+  ImGui.Separator();
+
+  if (pic) {
+    // Fit the image to the window width, keeping its aspect ratio.
+    const w = Math.min(pic.width, ImGui.GetContentRegionAvail().x);
+    ImGui.Image(pic.id, new ImGui.Vec2(w, w * pic.height / pic.width));
+
+    // Images work with draw lists too.
+    const dl = ImGui.GetForegroundDrawList();
+    const m = ImGui.GetMousePos();
+    dl.AddImage(pic.id, new ImGui.Vec2(m.x + 12, m.y + 12), new ImGui.Vec2(m.x + 60, m.y + 60));
+  } else {
+    ImGui.TextDisabled("No image uploaded yet.");
+  }
+
+  ImGui.End();
+}
+`,
     "Blank": `function frame() {
   ImGui.Begin("Hello");
   ImGui.Text("Start here.");
@@ -163,9 +206,14 @@ function frame() {
     while (openScopes.length) ImGui[openScopes.pop()]();
   }
 
+  const assets = createPlaygroundAssets(function () {
+    renderAssetList();
+    apply();
+  });
+
   function compile(code) {
-    const factory = new Function("ImGui", code + "\nreturn typeof frame === \"function\" ? frame : null;");
-    return factory(api);
+    const factory = new Function("ImGui", "assets", code + "\nreturn typeof frame === \"function\" ? frame : null;");
+    return factory(api, assets.api);
   }
 
   function setErrorMarker(error) {
@@ -210,6 +258,9 @@ function frame() {
       // Keep the last working frame running; just report.
       const line = e instanceof SyntaxError ? null : setErrorMarker(e);
       setStatus("error", (e instanceof SyntaxError ? "Syntax error: " : "Error: ") + e.message + (line ? "  (line " + line + ")" : ""));
+    } finally {
+      // Top-level assets.font() calls may have grown the atlas, even if compile then failed.
+      assets.flush();
     }
   }
 
@@ -225,6 +276,7 @@ function frame() {
     ImGui.NewFrame();
 
     if (currentFrame) {
+      assets.setInFrame(true);
       try {
         currentFrame();
       } catch (e) {
@@ -236,6 +288,8 @@ function frame() {
           const line = setErrorMarker(e);
           setStatus("error", "Runtime error: " + e.message + (line ? "  (line " + line + ")" : ""));
         }
+      } finally {
+        assets.setInFrame(false);
       }
     }
 
@@ -287,7 +341,29 @@ function frame() {
     ts.javascriptDefaults.addExtraLib(wrap("imgui-emscripten", emscripten), "file:///typings/emscripten.d.ts");
     ts.javascriptDefaults.addExtraLib(wrap("bind-imgui", bind.replace(/"\.\/emscripten"/g, "\"imgui-emscripten\"")), "file:///typings/bind-imgui.d.ts");
     ts.javascriptDefaults.addExtraLib(wrap("imgui-js", imgui), "file:///typings/imgui.d.ts");
-    ts.javascriptDefaults.addExtraLib("declare const ImGui: typeof import(\"imgui-js\");\n", "file:///typings/globals.d.ts");
+    ts.javascriptDefaults.addExtraLib([
+      "declare const ImGui: typeof import(\"imgui-js\");",
+      "interface PlaygroundImage {",
+      "  /** Texture id for ImGui.Image / ImageButton / DrawList.AddImage. */",
+      "  id: WebGLTexture;",
+      "  width: number;",
+      "  height: number;",
+      "  /** Natural size, ready to pass as the size argument. */",
+      "  size: import(\"imgui-js\").Vec2;",
+      "}",
+      "/** Fonts and images uploaded from the Assets panel. */",
+      "declare const assets: {",
+      "  /** An uploaded .ttf/.otf baked at a pixel size (6-128). Call at the top level, not inside frame(). */",
+      "  font(name: string, size?: number): import(\"imgui-js\").Font;",
+      "  /** An uploaded image. Safe to call anywhere. */",
+      "  image(name: string): PlaygroundImage;",
+      "  has(name: string): boolean;",
+      "  /** Names of uploaded fonts. */",
+      "  fonts(): string[];",
+      "  /** Names of uploaded images. */",
+      "  images(): string[];",
+      "};",
+    ].join("\n"), "file:///typings/globals.d.ts");
   }
 
   function startEditor() {
@@ -383,12 +459,152 @@ function frame() {
     });
   }
 
+  // --- Assets panel ---
+
+  function formatBytes(n) {
+    return n < 1024 * 1024 ? Math.max(1, Math.round(n / 1024)) + " KB" : (n / 1024 / 1024).toFixed(1) + " MB";
+  }
+
+  // "My Font-Bold.ttf" -> "myFontBold"
+  function varName(fileName, fallback) {
+    const words = fileName.replace(/\.[^.]+$/, "").split(/[^A-Za-z0-9]+/).filter(Boolean);
+    let name = words.map((w, i) => i ? w[0].toUpperCase() + w.slice(1) : w.toLowerCase()).join("");
+    if (!name || /^[0-9]/.test(name)) name = fallback;
+    return name;
+  }
+
+  function snippetFor(entry) {
+    const quoted = JSON.stringify(entry.name);
+    return entry.kind === "font"
+      ? "const " + varName(entry.name, "font") + " = assets.font(" + quoted + ", 18);\n"
+      : "const " + varName(entry.name, "image") + " = assets.image(" + quoted + ");\n";
+  }
+
+  function insertSnippet(entry) {
+    if (!editor) return;
+    const text = snippetFor(entry);
+    // Fonts must be loaded at the top level, so they go above frame(); images go at the cursor.
+    const model = editor.getModel();
+    let position = editor.getPosition();
+    if (entry.kind === "font") {
+      const match = model.findNextMatch("function frame", { lineNumber: 1, column: 1 }, false, true, null, false);
+      position = match ? { lineNumber: match.range.startLineNumber, column: 1 } : { lineNumber: 1, column: 1 };
+    } else {
+      position = { lineNumber: position.lineNumber, column: 1 };
+    }
+    editor.executeEdits("assets", [{
+      range: new monaco.Range(position.lineNumber, 1, position.lineNumber, 1),
+      text: text,
+    }]);
+    editor.focus();
+    $("assets-panel").hidePopover();
+  }
+
+  function renderAssetList() {
+    const items = assets.list();
+    const listEl = $("asset-list");
+    listEl.replaceChildren();
+    $("asset-empty").hidden = items.length > 0;
+    $("asset-count").textContent = items.length ? String(items.length) : "";
+
+    items.forEach(function (entry) {
+      const li = document.createElement("li");
+
+      const preview = document.createElement("div");
+      preview.className = "preview";
+      if (entry.kind === "image") {
+        const img = document.createElement("img");
+        img.src = entry.previewUrl;
+        img.alt = "";
+        preview.appendChild(img);
+      } else {
+        preview.textContent = "Aa";
+        if (entry.previewFamily) preview.style.fontFamily = "\"" + entry.previewFamily + "\"";
+      }
+
+      const info = document.createElement("div");
+      info.className = "info";
+      const name = document.createElement("b");
+      name.textContent = entry.name;
+      name.title = entry.name;
+      const meta = document.createElement("span");
+      meta.textContent = entry.kind === "font"
+        ? "Font · " + formatBytes(entry.bytes.byteLength)
+        : "Image · " + entry.width + " × " + entry.height;
+      info.append(name, meta);
+
+      const insert = document.createElement("button");
+      insert.className = "control";
+      insert.textContent = "Insert";
+      insert.title = "Insert " + snippetFor(entry).trim();
+      insert.onclick = () => insertSnippet(entry);
+
+      const remove = document.createElement("button");
+      remove.className = "control icon";
+      remove.setAttribute("aria-label", "Remove " + entry.name);
+      remove.title = "Remove";
+      remove.innerHTML = "<svg width=\"12\" height=\"12\" viewBox=\"0 0 12 12\" aria-hidden=\"true\"><path d=\"M2.5 2.5l7 7m0-7l-7 7\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\"/></svg>";
+      remove.onclick = () => assets.remove(entry.name);
+
+      li.append(preview, info, insert, remove);
+      listEl.appendChild(li);
+    });
+  }
+
+  async function addFiles(files) {
+    for (const file of Array.from(files)) {
+      try {
+        const entry = await assets.add(file);
+        setStatus("ok", "Added " + entry.kind + " " + entry.name);
+      } catch (e) {
+        setStatus("error", e.message);
+      }
+    }
+  }
+
+  function setupAssets() {
+    const input = $("asset-file");
+    input.onchange = function () {
+      addFiles(input.files);
+      input.value = "";
+    };
+
+    // Drop files anywhere on the page.
+    let depth = 0;
+    const hasFiles = (e) => e.dataTransfer && Array.from(e.dataTransfer.types).includes("Files");
+    window.addEventListener("dragenter", function (e) {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      depth++;
+      document.body.classList.add("dropping");
+    });
+    window.addEventListener("dragover", function (e) {
+      if (hasFiles(e)) e.preventDefault();
+    });
+    window.addEventListener("dragleave", function (e) {
+      if (!hasFiles(e)) return;
+      depth = Math.max(0, depth - 1);
+      if (!depth) document.body.classList.remove("dropping");
+    });
+    window.addEventListener("drop", function (e) {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      depth = 0;
+      document.body.classList.remove("dropping");
+      addFiles(e.dataTransfer.files);
+    });
+  }
+
   new ResizeObserver(function () {
     $("size").textContent = canvas.clientWidth + " × " + canvas.clientHeight;
   }).observe(canvas);
 
   setupSplitter();
-  startImGui().then(function () {
+  setupAssets();
+  startImGui().then(async function () {
+    // Textures need the GL context, so stored assets load after ImGui starts.
+    await assets.load();
+    renderAssetList();
     setStatus("ok", "ImGui ready");
     startEditor();
   }).catch(function (e) {

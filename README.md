@@ -25,6 +25,24 @@ function frame() {
 
 Where C++ takes a pointer (`&value`), imgui-js takes an accessor: `(v = value) => value = v`.
 
+## Fonts and images
+
+Add `.ttf`/`.otf` fonts and images from the **Assets** panel, or drop them anywhere on the page. They're kept in your browser (IndexedDB) and available to your code as `assets`:
+
+```js
+const title = assets.font("Inter.ttf", 28); // top level only: 1.80 bakes each size up front
+const logo = assets.image("logo.png");
+
+function frame() {
+  ImGui.Begin("Assets");
+  ImGui.PushFont(title);
+  ImGui.Text("Hello");
+  ImGui.PopFont();
+  ImGui.Image(logo.id, logo.size);
+  ImGui.End();
+}
+```
+
 ## Running locally
 
 It's a static site. Open `index.html` directly, or serve the folder (`python -m http.server`).
