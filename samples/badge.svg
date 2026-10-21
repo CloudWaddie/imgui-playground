@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4296fa"/>
+      <stop offset="1" stop-color="#1b3f7a"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="44" fill="url(#bg)"/>
+  <!-- a little ImGui window -->
+  <rect x="48" y="62" width="160" height="132" rx="10" fill="#131418"/>
+  <path d="M58 62h140a10 10 0 0 1 10 10v16H48V72a10 10 0 0 1 10-10z" fill="#ffc450"/>
+  <path d="M60 71l6 8 6-8z" fill="#131418"/>
+  <rect x="64" y="104" width="72" height="10" rx="5" fill="#a3a8b4"/>
+  <rect x="64" y="126" width="128" height="14" rx="4" fill="#2c2f37"/>
+  <rect x="64" y="126" width="80" height="14" rx="4" fill="#4296fa"/>
+  <rect x="64" y="154" width="52" height="22" rx="5" fill="#4296fa"/>
+</svg>

@@ -200,6 +200,23 @@ window.createPlaygroundAssets = function (onChange) {
     onChange();
   }
 
+  // Samples ship with the site. They're fetched every load, never persisted, and can't be removed.
+  async function loadSamples(urls) {
+    await Promise.all(urls.map(async function (url) {
+      try {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(response.status + " " + response.statusText);
+        const name = url.split("/").pop();
+        const record = { name: name, kind: FONT_EXT.test(name) ? "font" : "image", type: response.headers.get("content-type") || "", bytes: await response.arrayBuffer() };
+        // A user upload with the same name wins.
+        if (!entries.has(name)) entries.set(name, Object.assign(await materialize(record), { sample: true }));
+      } catch (e) {
+        // Expected when the page is opened from file://, where fetch is blocked.
+        console.warn("Sample asset unavailable: " + url, e);
+      }
+    }));
+  }
+
   async function load() {
     let records = [];
     try {
@@ -209,6 +226,7 @@ window.createPlaygroundAssets = function (onChange) {
     }
     for (const record of records) {
       try {
+        release(entries.get(record.name)); // replaces a sample of the same name
         entries.set(record.name, await materialize(record));
       } catch (e) {
         console.warn("Skipping stored asset " + record.name + ":", e);
@@ -230,6 +248,7 @@ window.createPlaygroundAssets = function (onChange) {
     remove: remove,
     list: list,
     load: load,
+    loadSamples: loadSamples,
     flush: flush,
     setInFrame(value) { inFrame = value; },
   };

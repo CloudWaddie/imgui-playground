@@ -99,46 +99,65 @@ function frame() {
   }
 }
 `,
-    "Fonts & images": `// Upload fonts (.ttf/.otf) and images from Assets, or drop them anywhere on the page.
-// assets.font() must run at the top level: Dear ImGui 1.80 bakes each font size up front.
-const fontName = assets.fonts()[0];
-const imageName = assets.images()[0];
+    "Assets": `// Uses the sample assets that ship with the playground (open Assets to see them).
+// Upload your own and change the names below. Fonts load at the top level only:
+// Dear ImGui 1.80 bakes each font size up front.
+const heading = assets.font("Roboto-Medium.ttf", 30);
+const body = assets.font("Roboto-Medium.ttf", 16);
+const mono = assets.font("Cousine-Regular.ttf", 14);
+const badge = assets.image("badge.svg");
 
-const big = fontName ? assets.font(fontName, 32) : null;
-const body = fontName ? assets.font(fontName, 17) : null;
-const pic = imageName ? assets.image(imageName) : null;
+const tint = [1, 1, 1, 1];
+let spinning = true;
+let angle = 0;
 
 function frame() {
   ImGui.SetNextWindowPos(new ImGui.Vec2(40, 40), ImGui.Cond.FirstUseEver);
-  ImGui.SetNextWindowSize(new ImGui.Vec2(420, 380), ImGui.Cond.FirstUseEver);
-  ImGui.Begin("Fonts & images");
+  ImGui.SetNextWindowSize(new ImGui.Vec2(440, 470), ImGui.Cond.FirstUseEver);
+  ImGui.Begin("Assets");
+  ImGui.PushFont(body);
 
-  if (big) {
-    ImGui.PushFont(big);
-    ImGui.Text("Hello, ImGui");
-    ImGui.PopFont();
-    ImGui.PushFont(body);
-    ImGui.TextWrapped("This is " + fontName + " at 17px. The quick brown fox jumps over the lazy dog.");
-    ImGui.PopFont();
-  } else {
-    ImGui.TextDisabled("No font uploaded yet.");
-  }
+  ImGui.PushFont(heading);
+  ImGui.Text("Fonts & images");
+  ImGui.PopFont();
+  ImGui.TextWrapped("Roboto for UI text, Cousine for code, and one SVG drawn three ways.");
+  ImGui.Spacing();
 
-  ImGui.Separator();
+  // 1. As a widget, tinted.
+  ImGui.Image(badge.id, new ImGui.Vec2(64, 64), new ImGui.Vec2(0, 0), new ImGui.Vec2(1, 1),
+    new ImGui.Vec4(tint[0], tint[1], tint[2], tint[3]));
+  ImGui.SameLine();
 
-  if (pic) {
-    // Fit the image to the window width, keeping its aspect ratio.
-    const w = Math.min(pic.width, ImGui.GetContentRegionAvail().x);
-    ImGui.Image(pic.id, new ImGui.Vec2(w, w * pic.height / pic.width));
+  // 2. As a button.
+  if (ImGui.ImageButton(badge.id, new ImGui.Vec2(56, 56))) spinning = !spinning;
+  ImGui.SameLine();
+  ImGui.TextDisabled(spinning ? "click to stop" : "click to spin");
 
-    // Images work with draw lists too.
-    const dl = ImGui.GetForegroundDrawList();
-    const m = ImGui.GetMousePos();
-    dl.AddImage(pic.id, new ImGui.Vec2(m.x + 12, m.y + 12), new ImGui.Vec2(m.x + 60, m.y + 60));
-  } else {
-    ImGui.TextDisabled("No image uploaded yet.");
-  }
+  ImGui.ColorEdit4("Tint", tint);
 
+  // 3. In a draw list, as a rotating quad.
+  angle += ImGui.GetIO().DeltaTime * (spinning ? 1.5 : 0);
+  const dl = ImGui.GetWindowDrawList();
+  const p = ImGui.GetCursorScreenPos();
+  const w = ImGui.GetContentRegionAvail().x;
+  const box = 150;
+  const c = new ImGui.Vec2(p.x + w / 2, p.y + box / 2);
+  const r = box * 0.32 * Math.SQRT2;
+  // Corners in UV order: top-left, top-right, bottom-right, bottom-left.
+  const corner = (k) => {
+    const a = angle + Math.PI * (k / 2 - 0.75);
+    return new ImGui.Vec2(c.x + Math.cos(a) * r, c.y + Math.sin(a) * r);
+  };
+  dl.AddRectFilled(p, new ImGui.Vec2(p.x + w, p.y + box), ImGui.IM_COL32(14, 15, 18, 255), 6);
+  dl.AddImageQuad(badge.id, corner(0), corner(1), corner(2), corner(3));
+  ImGui.Dummy(new ImGui.Vec2(w, box));
+
+  ImGui.PushFont(mono);
+  ImGui.TextColored(new ImGui.Vec4(0.64, 0.66, 0.71, 1), 'const badge = assets.image("badge.svg");');
+  ImGui.TextColored(new ImGui.Vec4(0.64, 0.66, 0.71, 1), "dl.AddImageQuad(badge.id, a, b, c, d);");
+  ImGui.PopFont();
+
+  ImGui.PopFont();
   ImGui.End();
 }
 `,
@@ -366,6 +385,12 @@ function frame() {
     ].join("\n"), "file:///typings/globals.d.ts");
   }
 
+  // index.html#example=Assets opens that example instead of the saved code.
+  function linkedExample() {
+    const match = /^#example=(.+)$/.exec(location.hash);
+    return match ? EXAMPLES[decodeURIComponent(match[1])] || null : null;
+  }
+
   function startEditor() {
     require.config({ paths: { vs: MONACO_BASE } });
     require(["vs/editor/editor.main"], function () {
@@ -394,7 +419,7 @@ function frame() {
       });
 
       editor = monaco.editor.create($("editor"), {
-        value: storageGet(STORAGE_CODE) || EXAMPLES[DEFAULT_EXAMPLE],
+        value: linkedExample() || storageGet(STORAGE_CODE) || EXAMPLES[DEFAULT_EXAMPLE],
         language: "javascript",
         theme: "playground",
         automaticLayout: true,
@@ -528,9 +553,9 @@ function frame() {
       name.textContent = entry.name;
       name.title = entry.name;
       const meta = document.createElement("span");
-      meta.textContent = entry.kind === "font"
+      meta.textContent = (entry.kind === "font"
         ? "Font · " + formatBytes(entry.bytes.byteLength)
-        : "Image · " + entry.width + " × " + entry.height;
+        : "Image · " + entry.width + " × " + entry.height) + (entry.sample ? " · sample" : "");
       info.append(name, meta);
 
       const insert = document.createElement("button");
@@ -546,6 +571,7 @@ function frame() {
       remove.innerHTML = "<svg width=\"12\" height=\"12\" viewBox=\"0 0 12 12\" aria-hidden=\"true\"><path d=\"M2.5 2.5l7 7m0-7l-7 7\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\"/></svg>";
       remove.onclick = () => assets.remove(entry.name);
 
+      if (entry.sample) remove.style.visibility = "hidden";
       li.append(preview, info, insert, remove);
       listEl.appendChild(li);
     });
@@ -604,6 +630,7 @@ function frame() {
   startImGui().then(async function () {
     // Textures need the GL context, so stored assets load after ImGui starts.
     await assets.load();
+    await assets.loadSamples(["samples/Roboto-Medium.ttf", "samples/Cousine-Regular.ttf", "samples/badge.svg"]);
     renderAssetList();
     setStatus("ok", "ImGui ready");
     startEditor();
