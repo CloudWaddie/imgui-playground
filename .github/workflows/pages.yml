@@ -63,7 +63,7 @@ jobs:
 
   deploy:
     needs: build
-    # Deploy whatever built; the page falls back to the hosted 1.80 build if nothing did.
+    # Deploy whatever built; the page falls back to the npm jsimgui release if nothing did.
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     environment:
@@ -80,17 +80,23 @@ jobs:
         run: |
           mkdir -p _site/lib
           cp -r index.html app.js assets.js CNAME samples _site/
-          # Publish each built version under lib/<id>/ and list only the ones that exist.
+          # Caches in front of Pages (Cloudflare: 4h) would otherwise serve old scripts after a
+          # deploy, so every deploy gets new script URLs and every library build its own folder.
+          sed -i "s/__BUILD__/${GITHUB_SHA::8}/g" _site/index.html
+          echo '[]' > versions.json
           for id in $(jq -r '.[].id' imgui-versions.json); do
             if [ -f "built/imgui-$id/mod.js" ]; then
-              cp -r "built/imgui-$id" "_site/lib/$id"
+              rev=$(jq -r .jsimgui "built/imgui-$id/build-info.json")
+              mkdir -p "_site/lib/$id"
+              cp -r "built/imgui-$id" "_site/lib/$id/$rev"
+              jq --arg id "$id" --arg path "lib/$id/$rev/" '. + [{id: $id, path: $path}]' versions.json > versions.tmp
+              mv versions.tmp versions.json
             else
               echo "::warning::imgui $id did not build; leaving it out"
             fi
           done
           # Newest first; the page defaults to the first entry.
-          ls _site/lib | jq -R '{id: .}' | jq -s 'sort_by(.id | split(".") | map(tonumber)) | reverse' > versions.json
-          mv versions.json _site/lib/versions.json
+          jq 'sort_by(.id | split(".") | map(tonumber)) | reverse' versions.json > _site/lib/versions.json
           cat _site/lib/versions.json
 
       - uses: actions/configure-pages@v5
