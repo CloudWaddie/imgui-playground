@@ -262,7 +262,6 @@ function frame() {
     // Our own context with alpha, so the transparent clear in loop() shows the pane's grid
     // (the impl would create one with alpha: false).
     ImGui_Impl.Init(canvas.getContext("webgl2", { alpha: true }) || canvas.getContext("webgl", { alpha: true }) || canvas);
-    $("version").textContent = "Dear ImGui " + ImGui.VERSION + " · WebAssembly";
     requestAnimationFrame(loop);
 
     setInterval(function () {
