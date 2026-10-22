@@ -256,15 +256,22 @@ function frame() {
   }
 }
 `,
-    "Minecraft ClickGUI": `// Minecraft client ClickGUI, drawn entirely with draw lists. All input comes from the mouse.
-//   Left click a module: toggle it         Right click (or the arrow): open its settings
-//   Drag sliders, click checkboxes, click a mode to cycle it
-//   Drag the header to move the window     Mouse wheel scrolls     Insert / X / the orb: show and hide
+    "Minecraft ClickGUI": `// Cloud Client: a Vape V4 style ClickGUI for Minecraft, drawn with draw lists.
+//   Click a module to toggle it         Right click (or the dots) opens its settings
+//   Drag a header to move its panel     Click a header to collapse the panel
+//   Insert shows and hides the GUI
 
-const ACC = [20, 230, 255];   // accent
-const DEEP = [20, 110, 255];  // second gradient stop
-const GRAY = [150, 160, 176];
-const WHITE = [255, 255, 255];
+// ---- Theme -------------------------------------------------------------------------------------
+
+const ACC = [20, 230, 255];
+const BG = [20, 20, 23];
+const HEADER = [14, 14, 16];
+const SETBG = [13, 13, 15];
+const LINE = [44, 44, 50];
+const TEXT = [244, 244, 246];
+const DIM = [150, 150, 158];
+const MUTE = [100, 100, 108];
+const WHITE_ = [255, 255, 255];
 
 let GA = 1; // global alpha, multiplied into every color
 
@@ -272,58 +279,44 @@ const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
 const lerp = (a, b, t) => a + (b - a) * t;
 const damp = (a, b, speed, dt) => a + (b - a) * (1 - Math.exp(-speed * dt));
 const outCubic = (p) => 1 - Math.pow(1 - clamp(p, 0, 1), 3);
-const outBack = (p) => { p = clamp(p, 0, 1); return 1 + 2.70158 * Math.pow(p - 1, 3) + 1.70158 * Math.pow(p - 1, 2); };
 const mixc = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
 const C = (c, a = 255) => IM_COL32(Math.round(c[0]), Math.round(c[1]), Math.round(c[2]), Math.round(clamp(a * GA, 0, 255)));
 const V = (x, y) => new ImVec2(x, y);
+const hot = (x0, y0, x1, y1) => inp.x >= x0 && inp.x <= x1 && inp.y >= y0 && inp.y <= y1;
 
-// An underdamped spring: x chases target and overshoots a little, which is what makes things feel alive.
-function spring(s, target, dt) {
-  const n = Math.max(1, Math.ceil(dt * 120)), h = dt / n;
-  for (let i = 0; i < n; i++) {
-    s.v += ((target - s.x) * 170 - s.v * 13) * h;
-    s.x += s.v * h;
-  }
-}
+// Roboto ships with the playground (see Assets); fall back to the default font without it.
+const FONT = assets.has("Roboto-Medium.ttf") ? assets.font("Roboto-Medium.ttf") : null;
 
 /** @param {ImDrawList} dl */
 function text(dl, x, y, size, c, s) {
-  ImGui.PushFont(ImGui.GetFont(), size);
+  ImGui.PushFont(FONT || ImGui.GetFont(), size);
   dl.AddText(V(x, y), c, s);
   ImGui.PopFont();
 }
 function textW(size, s) {
-  return ImGui.CalcTextSize(s).x * size / ImGui.GetFontSize();
+  ImGui.PushFont(FONT || ImGui.GetFont(), size);
+  const w = ImGui.CalcTextSize(s).x;
+  ImGui.PopFont();
+  return w;
 }
-// Text whose vertices are recolored with a moving accent-to-white sweep.
+// The one gradient: white sliding into the accent, applied per vertex after the text is drawn.
 /** @param {ImDrawList} dl */
-function gradText(dl, x, y, size, s, shift) {
-  const w = Math.max(1, textW(size, s)), first = dl.VtxCount;
-  text(dl, x, y, size, C(WHITE), s);
+function gradText(dl, x, y, size, s) {
+  const w = Math.max(1, textW(size, s)), first = dl.VtxCount, t = ImGui.GetTime();
+  text(dl, x, y, size, C(WHITE_), s);
   for (let i = first; i < dl.VtxCount; i++) {
-    const u = ((((dl.GetVtxPos(i).x - x) / w + shift) % 1) + 1) % 1;
-    const k = u < 0.5 ? u * 2 : 2 - u * 2;
-    dl.SetVtxColor(i, C(mixc(ACC, WHITE, k * k)));
+    const u = (dl.GetVtxPos(i).x - x) / w;
+    dl.SetVtxColor(i, C(mixc(WHITE_, ACC, 0.5 + 0.5 * Math.sin(t * 1.6 - u * 3))));
   }
-}
-/** @param {ImDrawList} dl */
-function hex(dl, cx, cy, r, rot, c, th) {
-  dl.PathClear();
-  for (let k = 0; k < 6; k++) {
-    const a = rot + k * Math.PI / 3;
-    dl.PathLineTo(V(cx + Math.cos(a) * r, cy + Math.sin(a) * r));
-  }
-  dl.PathStroke(c, th, ImDrawFlags.Closed);
 }
 
-// ---- Model -----------------------------------------------------------------------------------
+// ---- Model -------------------------------------------------------------------------------------
 
 const slider = (name, min, max, val, dec = 1) => ({ t: "slider", name, min, max, val, dec, d: (val - min) / (max - min), hov: 0 });
 const check = (name, val = false) => ({ t: "check", name, val, a: val ? 1 : 0, hov: 0 });
-const mode = (name, opts) => ({ t: "mode", name, opts, i: 0, flash: 0, dir: 1, hov: 0 });
+const mode = (name, opts) => ({ t: "mode", name, opts, i: 0, an: opts.map((_, k) => (k === 0 ? 1 : 0)) });
 const mod = (name, desc, key, settings = [], on = false) => ({
-  name, desc, key, settings, on, onA: on ? 1 : 0, knob: { x: on ? 1 : 0, v: 0 },
-  hov: 0, open: false, openA: 0,
+  name, desc, key, settings, on, onA: on ? 1 : 0, hov: 0, open: false, openA: 0,
 });
 
 const CATS = [
@@ -379,513 +372,337 @@ const CATS = [
 const ALL = CATS.flatMap((c) => c.mods);
 CATS.forEach((c) => { c.hov = 0; c.sel = 0; });
 
-const HEAD = 58, SIDE = 176, FOOT = 30, SIDE_ITEM = 52;
+const HEAD_H = 32, MOD_H = 26;
 const gui = {
-  x: 0, y: 0, w: 800, h: 520, placed: false,
-  open: true, openS: { x: 0, v: 0 }, alpha: 0, flashT: 1,
-  dragging: false, dx: 0, dy: 0,
-  cat: 0, catT: 1, catDir: 1, sel: { x: 0, v: 0 }, closeHov: 0,
-  scroll: 0, scrollT: 0, total: 0, active: null,
-  orbHov: 0,
+  placed: false, open: true, wasOpen: false, o: 0, openT: 0,
+  order: [0, 1, 2, 3, 4, 5], drag: null, active: null, top: null, hintHov: 0,
 };
 const inp = { x: 0, y: 0, click: false, rclick: false, down: false, wheel: 0 };
 let toasts = [];
-let ripples = [];
-let trail = [];
-const parts = Array.from({ length: 46 }, () => ({
-  x: Math.random() * 800, y: Math.random() * 520,
-  vx: (Math.random() - 0.5) * 12, vy: -(6 + Math.random() * 16),
-  r: 1 + Math.random() * 1.8, ph: Math.random() * 6.28,
-}));
-// Steve's face: H hair, S skin, W eye white, B eye blue, N nose, M mouth.
-const STEVE = ["HHHHHHHH", "HHHHHHHH", "HSSSSSSH", "SSSSSSSS", "SBWSSWBS", "SSSNNSSS", "SSMMMMSS", "SSSSSSSS"];
-const STEVE_COL = { H: [66, 43, 24], S: [190, 132, 98], W: [255, 255, 255], B: [66, 60, 150], N: [160, 100, 72], M: [110, 60, 45] };
 
-const hot = (x0, y0, x1, y1) => inp.x >= x0 && inp.x <= x1 && inp.y >= y0 && inp.y <= y1;
-const modeSuffix = (m) => { const s = m.settings.find((q) => q.t === "mode"); return s ? s.opts[s.i] : ""; };
+const modeText = (m) => { const s = m.settings.find((q) => q.t === "mode"); return s ? s.opts[s.i] : ""; };
 
-function toggleGui(v) {
-  gui.open = v;
-  if (v) gui.flashT = 0;
-}
 function toast(m) {
   toasts.push({ text: m.name, on: m.on, age: 0 });
-  if (toasts.length > 5) toasts.shift();
+  if (toasts.length > 4) toasts.shift();
 }
 
-// ---- Always-on overlay: watermark, module list and toasts ---------------------------------------
+// ---- Overlay that is always on screen: watermark, module list, toasts ----------------------------
 
 /** @param {ImDrawList} dl */
-function drawHud(dl, dt, t, sw, sh) {
+function drawHud(dl, dt, sw, sh) {
   GA = 1;
-  const fps = Math.round(ImGui.GetIO().Framerate);
-  const tail = "  |  " + fps + " fps";
-  const w = textW(20, "Waddie") + textW(13, tail) + 22;
-  dl.AddRectFilled(V(10, 10), V(10 + w, 40), C([8, 12, 18], 170), 8);
-  dl.AddRectFilled(V(10, 14), V(13, 36), C(ACC), 2);
-  gradText(dl, 20, 14, 20, "Waddie", t * 0.4);
-  text(dl, 20 + textW(20, "Waddie"), 19, 13, C(GRAY), tail);
+  gradText(dl, 14, 11, 17, "Cloud Client");
 
-  // Enabled modules, longest first. Each one slides in from the right as its switch animates.
-  const label = (m) => m.name + (modeSuffix(m) ? " " + modeSuffix(m) : "");
-  const act = ALL.filter((m) => m.onA > 0.01).sort((a, b) => textW(15, label(b)) - textW(15, label(a)));
+  // Enabled modules, longest first. Each fades and slides in with its switch.
+  const act = ALL.filter((m) => m.onA > 0.01).sort((a, b) => textW(14, b.name + modeText(b)) - textW(14, a.name + modeText(a)));
   act.forEach((m, i) => {
-    m.hudY = m.hudY === undefined ? i * 20 : damp(m.hudY, i * 20, 12, dt);
-    const sfx = modeSuffix(m);
-    const bw = textW(15, m.name) + (sfx ? textW(12, sfx) + 6 : 0) + 18;
+    m.hudY = m.hudY === undefined ? i * 20 : damp(m.hudY, i * 20, 14, dt);
+    const sfx = modeText(m);
+    const bw = textW(14, m.name) + (sfx ? textW(12, sfx) + 6 : 0) + 16;
     const e = outCubic(m.onA);
     const x = sw - bw * e, y = 12 + m.hudY;
-    const c = mixc(ACC, DEEP, 0.5 + 0.5 * Math.sin(t * 1.5 + i * 0.5));
     GA = m.onA;
-    dl.AddRectFilled(V(x - 4, y), V(sw, y + 20), C([6, 9, 14], 150));
-    dl.AddRectFilled(V(sw - 3, y), V(sw, y + 20), C(c));
-    text(dl, x + 2, y + 2, 15, C(c), m.name);
-    if (sfx) text(dl, x + 2 + textW(15, m.name) + 6, y + 4, 12, C(GRAY), sfx);
+    dl.AddRectFilled(V(x, y), V(sw, y + 20), C([0, 0, 0], 170));
+    dl.AddRectFilled(V(sw - 2, y), V(sw, y + 20), C(WHITE_));
+    text(dl, x + 6, y + 3, 14, C(TEXT), m.name);
+    if (sfx) text(dl, x + 6 + textW(14, m.name) + 6, y + 4, 12, C(MUTE), sfx);
   });
 
-  // Toasts stack up in the bottom right corner.
+  // Toasts, bottom right.
   toasts.forEach((n, i) => {
     n.age += dt;
-    const life = 2.6, out = 0.35;
-    let s = outBack(n.age / 0.45);
-    if (n.age > life - out) s = 1 - Math.pow((n.age - (life - out)) / out, 2);
+    const life = 2.4;
+    const inT = outCubic(n.age / 0.3), outT = clamp((life - n.age) / 0.3, 0, 1);
     const idx = toasts.length - 1 - i;
-    n.sy = n.sy === undefined ? idx : damp(n.sy, idx, 10, dt);
-    const tw = 236, th = 48;
-    const x = sw - 16 - tw * s, y = sh - 16 - th - n.sy * 58;
-    const c = n.on ? ACC : [255, 90, 110];
-    GA = clamp(s, 0, 1);
-    dl.AddRectFilled(V(x - 2, y - 2), V(x + tw + 2, y + th + 2), C(c, 22), 12);
-    dl.AddRectFilled(V(x, y), V(x + tw, y + th), C([10, 14, 22], 235), 10);
-    dl.AddRect(V(x, y), V(x + tw, y + th), C(c, 120), 10, 1);
-    dl.AddCircleFilled(V(x + 26, y + 24), 12, C(c, 40), 24);
+    n.sy = n.sy === undefined ? idx : damp(n.sy, idx, 12, dt);
+    const tw = 200, th = 44;
+    const x = sw - 16 - tw + (1 - inT) * 30, y = sh - 16 - th - n.sy * (th + 6);
+    GA = inT * outT;
+    dl.AddRectFilled(V(x, y), V(x + tw, y + th), C([0, 0, 0], 173), 3);
+    dl.AddRect(V(x, y), V(x + tw, y + th), C([48, 48, 48]), 3, 1);
+    const ic = C(n.on ? WHITE_ : MUTE), ix = x + 21, iy = y + th / 2 - 1;
+    dl.AddCircle(V(ix, iy), 7.5, ic, 24, 1.3);
     if (n.on) {
-      dl.AddLine(V(x + 20, y + 24), V(x + 25, y + 29), C(c), 2.5);
-      dl.AddLine(V(x + 25, y + 29), V(x + 33, y + 19), C(c), 2.5);
+      dl.AddLine(V(ix - 3, iy), V(ix - 1, iy + 2.5), ic, 1.4);
+      dl.AddLine(V(ix - 1, iy + 2.5), V(ix + 3.5, iy - 2.5), ic, 1.4);
     } else {
-      dl.AddLine(V(x + 21, y + 19), V(x + 31, y + 29), C(c), 2.5);
-      dl.AddLine(V(x + 31, y + 19), V(x + 21, y + 29), C(c), 2.5);
+      dl.AddLine(V(ix - 2.5, iy - 2.5), V(ix + 2.5, iy + 2.5), ic, 1.4);
+      dl.AddLine(V(ix + 2.5, iy - 2.5), V(ix - 2.5, iy + 2.5), ic, 1.4);
     }
-    text(dl, x + 50, y + 7, 16, C(WHITE), n.text);
-    text(dl, x + 50, y + 27, 12.5, C(GRAY), n.on ? "Enabled" : "Disabled");
-    const left = clamp(1 - n.age / life, 0, 1);
-    dl.AddRectFilled(V(x + 10, y + th - 4), V(x + 10 + (tw - 20) * left, y + th - 2), C(c, 200), 1);
+    text(dl, x + 38, y + 7, 14, C(TEXT), n.text);
+    text(dl, x + 38, y + 24, 12, C(DIM), n.on ? "Enabled" : "Disabled");
+    dl.AddRectFilled(V(x + 1, y + th - 2.5), V(x + 1 + (tw - 2) * clamp(1 - n.age / life, 0, 1), y + th - 1.5), C(n.on ? ACC : MUTE));
   });
-  toasts = toasts.filter((n) => n.age < 2.6);
+  toasts = toasts.filter((n) => n.age < 2.4);
   GA = 1;
 }
 
-// ---- Sidebar icons -----------------------------------------------------------------------------
+// ---- Sidebar icons (24px box centered on cx, cy) -------------------------------------------------
 
 /** @param {ImDrawList} dl */
 function icon(dl, i, cx, cy, c) {
-  const P = Math.PI;
   switch (i) {
     case 0: // crossed swords
-      dl.AddLine(V(cx - 8, cy + 8), V(cx + 8, cy - 8), c, 2);
-      dl.AddLine(V(cx + 8, cy + 8), V(cx - 8, cy - 8), c, 2);
-      dl.AddCircleFilled(V(cx - 8, cy + 8), 2.2, c, 12);
-      dl.AddCircleFilled(V(cx + 8, cy + 8), 2.2, c, 12);
+      dl.AddLine(V(cx - 7, cy + 7), V(cx + 7, cy - 7), c, 1.6);
+      dl.AddLine(V(cx + 7, cy + 7), V(cx - 7, cy - 7), c, 1.6);
       break;
     case 1: // chevrons
-      for (let k = 0; k < 3; k++) {
-        const x = cx - 9 + k * 6;
-        dl.AddLine(V(x, cy - 7), V(x + 6, cy), c, 2);
-        dl.AddLine(V(x + 6, cy), V(x, cy + 7), c, 2);
+      for (let k = 0; k < 2; k++) {
+        const x = cx - 6 + k * 6;
+        dl.AddLine(V(x, cy - 6), V(x + 6, cy), c, 1.6);
+        dl.AddLine(V(x + 6, cy), V(x, cy + 6), c, 1.6);
       }
       break;
     case 2: // person
-      dl.AddCircle(V(cx, cy - 5), 4.5, c, 16, 2);
+      dl.AddCircle(V(cx, cy - 4), 4, c, 16, 1.6);
       dl.PathClear();
-      dl.PathArcTo(V(cx, cy + 11), 9, P, P * 2, 16);
-      dl.PathStroke(c, 2);
+      dl.PathArcTo(V(cx, cy + 10), 8, Math.PI, Math.PI * 2, 16);
+      dl.PathStroke(c, 1.6);
       break;
     case 3: // eye
-      dl.AddBezierQuadratic(V(cx - 10, cy), V(cx, cy - 11), V(cx + 10, cy), c, 2);
-      dl.AddBezierQuadratic(V(cx - 10, cy), V(cx, cy + 11), V(cx + 10, cy), c, 2);
-      dl.AddCircleFilled(V(cx, cy), 3.2, c, 14);
+      dl.AddBezierQuadratic(V(cx - 9, cy), V(cx, cy - 10), V(cx + 9, cy), c, 1.6);
+      dl.AddBezierQuadratic(V(cx - 9, cy), V(cx, cy + 10), V(cx + 9, cy), c, 1.6);
+      dl.AddCircleFilled(V(cx, cy), 2.6, c, 12);
       break;
     case 4: // globe
-      dl.AddCircle(V(cx, cy), 9, c, 20, 2);
-      dl.AddEllipse(V(cx, cy), V(4, 9), c, 0, 16, 1.5);
-      dl.AddLine(V(cx - 9, cy), V(cx + 9, cy), c, 1.5);
+      dl.AddCircle(V(cx, cy), 8, c, 20, 1.6);
+      dl.AddEllipse(V(cx, cy), V(3.5, 8), c, 0, 16, 1.3);
+      dl.AddLine(V(cx - 8, cy), V(cx + 8, cy), c, 1.3);
       break;
-    default: // 2x2 grid
+    default: // grid
       for (let a = 0; a < 2; a++) for (let b = 0; b < 2; b++) {
-        dl.AddRectFilled(V(cx - 9 + a * 10, cy - 9 + b * 10), V(cx - 1 + a * 10, cy - 1 + b * 10), c, 2);
+        dl.AddRect(V(cx - 7 + a * 8, cy - 7 + b * 8), V(cx - 1 + a * 8, cy - 1 + b * 8), c, 1.5, 1.4);
       }
   }
 }
 
-// ---- Settings rows ---------------------------------------------------------------------------
+// ---- Settings rows -----------------------------------------------------------------------------
+
+const rowH = (s) => (s.t === "slider" ? 36 : 24);
+const settingsH = (m) => (m.settings.length ? m.settings.reduce((a, s) => a + rowH(s), 0) + 8 : 0);
 
 /** @param {ImDrawList} dl */
 function drawSetting(dl, s, x0, y, x1, canHit, dt) {
-  const cy = y + 17;
-  const tx0 = x0 + 190;
-  text(dl, x0 + 24, cy - 8, 14, C([190, 200, 214]), s.name);
+  const px = x0 + 12, qx = x1 - 12;
+  const h = rowH(s);
 
   if (s.t === "slider") {
-    const tx1 = x1 - 100;
-    const over = canHit && hot(tx0 - 8, cy - 12, tx1 + 8, cy + 12);
+    const ty = y + 26;
+    const over = canHit && hot(x0 + 6, ty - 9, x1 - 6, ty + 9);
     if (over && inp.click) gui.active = s;
     if (gui.active === s && inp.down) {
       const q = Math.pow(10, s.dec);
-      s.val = Math.round((s.min + clamp((inp.x - tx0) / (tx1 - tx0), 0, 1) * (s.max - s.min)) * q) / q;
+      s.val = Math.round((s.min + clamp((inp.x - px) / (qx - px), 0, 1) * (s.max - s.min)) * q) / q;
     }
-    s.hov = damp(s.hov, over || gui.active === s ? 1 : 0, 14, dt);
-    s.d = damp(s.d, (s.val - s.min) / (s.max - s.min), 22, dt);
-    const fx = tx0 + (tx1 - tx0) * s.d;
-    dl.AddRectFilled(V(tx0, cy - 2), V(tx1, cy + 2), C([40, 48, 62]), 2);
-    dl.AddRectFilledMultiColor(V(tx0, cy - 2), V(fx, cy + 2), C(DEEP), C(ACC), C(ACC), C(DEEP));
-    dl.AddCircleFilled(V(fx, cy), 13 + 2 * s.hov, C(ACC, 34 * s.hov), 24);
-    dl.AddCircleFilled(V(fx, cy), 6 + 2 * s.hov, C(WHITE), 20);
-    dl.AddCircle(V(fx, cy), 6 + 2 * s.hov, C(ACC), 20, 2);
-    text(dl, x1 - 88, cy - 8, 14, C(ACC), s.val.toFixed(s.dec));
+    s.hov = damp(s.hov, over || gui.active === s ? 1 : 0, 16, dt);
+    s.d = damp(s.d, (s.val - s.min) / (s.max - s.min), 24, dt);
+    const fx = px + (qx - px) * s.d;
+    text(dl, px, y + 4, 12, C(DIM), s.name);
+    const v = s.val.toFixed(s.dec);
+    text(dl, qx - textW(12, v), y + 4, 12, C(TEXT), v);
+    dl.AddRectFilled(V(px, ty - 1), V(qx, ty + 1), C(LINE), 1);
+    dl.AddRectFilled(V(px, ty - 1), V(fx, ty + 1), C(ACC), 1);
+    dl.AddCircleFilled(V(fx, ty), 3.5 + 0.5 * s.hov, C(TEXT), 20);
   } else if (s.t === "check") {
-    const over = canHit && hot(tx0 - 4, cy - 13, tx0 + 80, cy + 13);
+    const over = canHit && hot(x0, y, x1, y + h);
     if (over && inp.click) s.val = !s.val;
-    s.hov = damp(s.hov, over ? 1 : 0, 14, dt);
-    s.a = damp(s.a, s.val ? 1 : 0, 16, dt);
-    const bc = mixc([30, 38, 52], ACC, s.a);
-    dl.AddRectFilled(V(tx0, cy - 9), V(tx0 + 18, cy + 9), C(bc), 5);
-    dl.AddRect(V(tx0, cy - 9), V(tx0 + 18, cy + 9), C(mixc([60, 72, 92], ACC, Math.max(s.a, s.hov * 0.6))), 5, 1.2);
-    if (s.a > 0.15) {
-      const k = s.a;
-      dl.AddLine(V(tx0 + 4.5, cy), V(tx0 + 8, cy + 4), C([6, 14, 22], 255 * k), 2.2);
-      dl.AddLine(V(tx0 + 8, cy + 4), V(tx0 + 14, cy - 4), C([6, 14, 22], 255 * k), 2.2);
-    }
-    text(dl, tx0 + 28, cy - 7, 13, C(mixc(GRAY, ACC, s.a)), s.val ? "On" : "Off");
+    s.hov = damp(s.hov, over ? 1 : 0, 16, dt);
+    s.a = damp(s.a, s.val ? 1 : 0, 18, dt);
+    text(dl, px, y + 5, 12.5, C(mixc(DIM, TEXT, Math.max(s.a, s.hov))), s.name);
+    dl.AddRectFilled(V(qx - 24, y + 6), V(qx, y + 18), C(mixc([58, 58, 64], ACC, s.a)), 6);
+    dl.AddCircleFilled(V(qx - 18 + s.a * 12, y + 12), 4, C(mixc(DIM, WHITE_, s.a)), 16);
   } else {
-    const pw = 160;
-    const over = canHit && hot(tx0, cy - 13, tx0 + pw, cy + 13);
-    const left = inp.x < tx0 + pw / 2;
-    if (over && inp.click) {
-      s.dir = left ? -1 : 1;
+    // Mode: click to go to the next option, right click for the previous one.
+    const over = canHit && hot(x0, y, x1, y + h);
+    if (over && (inp.click || inp.rclick)) {
+      s.dir = inp.rclick ? -1 : 1;
       s.i = (s.i + s.dir + s.opts.length) % s.opts.length;
       s.flash = 1;
     }
-    s.hov = damp(s.hov, over ? 1 : 0, 14, dt);
-    s.flash = damp(s.flash, 0, 9, dt);
-    dl.AddRectFilled(V(tx0, cy - 13), V(tx0 + pw, cy + 13), C([24, 32, 44]), 8);
-    dl.AddRect(V(tx0, cy - 13), V(tx0 + pw, cy + 13), C(mixc([46, 58, 76], ACC, s.hov * 0.7)), 8, 1);
-    const lc = C(mixc(GRAY, ACC, over && left ? 1 : 0.3)), rc = C(mixc(GRAY, ACC, over && !left ? 1 : 0.3));
-    dl.AddLine(V(tx0 + 16, cy - 5), V(tx0 + 11, cy), lc, 2);
-    dl.AddLine(V(tx0 + 11, cy), V(tx0 + 16, cy + 5), lc, 2);
-    dl.AddLine(V(tx0 + pw - 16, cy - 5), V(tx0 + pw - 11, cy), rc, 2);
-    dl.AddLine(V(tx0 + pw - 11, cy), V(tx0 + pw - 16, cy + 5), rc, 2);
-    const o = s.opts[s.i], ow = textW(14, o);
-    const save = GA;
-    GA *= 1 - s.flash * 0.7;
-    text(dl, tx0 + pw / 2 - ow / 2 + s.dir * s.flash * 14, cy - 8, 14, C(ACC), o);
-    GA = save;
+    s.flash = damp(s.flash || 0, 0, 10, dt);
+    s.hov = damp(s.hov || 0, over ? 1 : 0, 16, dt);
+    text(dl, px, y + 5, 12.5, C(mixc(DIM, TEXT, s.hov)), s.name);
+    const o = s.opts[s.i], ow = textW(12.5, o);
+    const g = GA;
+    GA *= 1 - s.flash * 0.8;
+    text(dl, qx - 12 - ow + (s.dir || 1) * s.flash * 8, y + 5, 12.5, C(ACC), o);
+    GA = g;
+    const ac = C(mixc(MUTE, TEXT, s.hov));
+    dl.AddLine(V(qx - ow - 22, y + 8), V(qx - ow - 25, y + 12), ac, 1.4);
+    dl.AddLine(V(qx - ow - 25, y + 12), V(qx - ow - 22, y + 16), ac, 1.4);
+    dl.AddLine(V(qx - 4, y + 8), V(qx - 1, y + 12), ac, 1.4);
+    dl.AddLine(V(qx - 1, y + 12), V(qx - 4, y + 16), ac, 1.4);
   }
+  return h;
 }
 
-// ---- One module card -------------------------------------------------------------------------
+// ---- One module button -------------------------------------------------------------------------
 
 /** @param {ImDrawList} dl */
-function drawCard(dl, m, idx, x0, y0, x1, view, live, dt) {
-  const hs = m.settings.length ? m.settings.length * 34 + 8 : 0;
-  const h = 54 + hs * m.openA;
+function drawModule(dl, m, mi, x0, y0, x1, canHit, dt) {
+  const sh = settingsH(m);
+  m.openA = damp(m.openA, m.open ? 1 : 0, 12, dt);
+  const hov = canHit && hot(x0, y0, x1, y0 + MOD_H);
+  m.hov = damp(m.hov, hov ? 1 : 0, 16, dt);
+  m.onA = damp(m.onA, m.on ? 1 : 0, 14, dt);
 
-  // Cards fly in one after another when a category opens.
-  const p = clamp((gui.catT - idx * 0.05) / 0.5, 0, 1);
-  const ox = (1 - outBack(p)) * 46 * gui.catDir;
-  const saveGA = GA;
-  GA *= outCubic(p);
-  x0 += ox; x1 += ox;
-
-  const inView = hot(view.x0, view.y0, view.x1, view.y1);
-  const hov = live && p > 0.85 && inView && hot(x0, y0, x1, y0 + 54);
-  m.hov = damp(m.hov, hov ? 1 : 0, 14, dt);
-  m.onA = damp(m.onA, m.on ? 1 : 0, 9, dt);
-  spring(m.knob, m.on ? 1 : 0, dt);
-  m.openA = damp(m.openA, m.open ? 1 : 0, 11, dt);
-
-  const sx1 = x1 - 18, sx0 = sx1 - 46;
-  const ax = sx0 - 22;
+  const dx = x1 - 15;
   if (hov) {
     if (inp.click) {
-      if (m.settings.length && Math.abs(inp.x - ax) < 14) m.open = !m.open;
+      if (m.settings.length && Math.abs(inp.x - dx) < 12) m.open = !m.open;
       else { m.on = !m.on; toast(m); }
-      ripples.push({ m, x: inp.x, y: inp.y, t: 0 });
     }
     if (inp.rclick && m.settings.length) m.open = !m.open;
   }
 
-  if (y0 + h > view.y0 && y0 < view.y1 && GA > 0.01) {
-    const a = m.onA;
-    dl.AddRectFilled(V(x0, y0), V(x1, y0 + h), C([16, 21, 30], 235), 10);
-    if (a > 0.01) {
-      dl.AddRectFilled(V(x0, y0), V(x1, y0 + h), C(ACC, 20 * a), 10);
-      for (let k = 1; k < 4; k++) dl.AddRect(V(x0 - k, y0 - k), V(x1 + k, y0 + h + k), C(ACC, (30 - k * 8) * a), 10 + k, 1.5);
-      dl.AddRectFilled(V(x0, y0 + 11), V(x0 + 3, y0 + 43), C(ACC, 255 * a), 2);
-    }
-    if (m.hov > 0.01) dl.AddRectFilled(V(x0, y0), V(x1, y0 + h), C(WHITE, 9 * m.hov), 10);
-    dl.AddRect(V(x0, y0), V(x1, y0 + h), C(mixc([34, 44, 60], ACC, a * 0.75)), 10, 1);
-
-    // Click ripples, clipped to the card.
-    dl.PushClipRect(V(x0, y0), V(x1, y0 + h), true);
-    for (const r of ripples) {
-      if (r.m !== m) continue;
-      const k = r.t / 0.8;
-      dl.AddCircleFilled(V(r.x, r.y), 380 * outCubic(k), C(ACC, 60 * (1 - k)), 48);
-    }
-    dl.PopClipRect();
-
-    text(dl, x0 + 20 + 3 * m.hov, y0 + 10, 17, C(mixc([226, 233, 244], ACC, a)), m.name);
-    text(dl, x0 + 20 + 3 * m.hov, y0 + 32, 12.5, C(GRAY), m.desc);
-
-    // Switch: the knob is on a spring, so it overshoots at both ends.
-    const kx = m.knob.x;
-    dl.AddRectFilled(V(sx0, y0 + 16), V(sx1, y0 + 38), C(mixc([46, 54, 68], ACC, clamp(kx, 0, 1))), 11);
-    const kcx = sx0 + 11 + kx * 24, kcy = y0 + 27;
-    if (a > 0.01) for (let k = 1; k < 4; k++) dl.AddCircleFilled(V(kcx, kcy), 8 + k * 3, C(ACC, 34 * a / k), 24);
-    dl.AddCircleFilled(V(kcx, kcy), 8 + 1.5 * m.hov, C(mixc([205, 212, 224], WHITE, a)), 24);
-
-    let kr = sx0 - 12;
-    if (m.settings.length) {
-      const s = lerp(1, -1, m.openA);
-      const ac = C(mixc(GRAY, ACC, m.openA));
-      dl.AddLine(V(ax - 5, y0 + 27 - s * 3), V(ax, y0 + 27 + s * 3), ac, 2);
-      dl.AddLine(V(ax, y0 + 27 + s * 3), V(ax + 5, y0 + 27 - s * 3), ac, 2);
-      kr = ax - 16;
-    }
-    if (m.key) {
-      const kw = textW(12, m.key) + 14;
-      dl.AddRectFilled(V(kr - kw, y0 + 17), V(kr, y0 + 37), C([30, 40, 56]), 5);
-      text(dl, kr - kw + 7, y0 + 20, 12, C(GRAY), m.key);
-    }
-
-    if (m.openA > 0.02) {
-      dl.PushClipRect(V(x0, y0 + 54), V(x1, y0 + h), true);
-      dl.AddLine(V(x0 + 16, y0 + 54), V(x1 - 16, y0 + 54), C(WHITE, 16 * m.openA), 1);
-      const g = GA;
-      m.settings.forEach((s, k) => {
-        const fa = clamp(m.openA * 1.7 - k * 0.2, 0, 1);
-        GA = g * fa;
-        drawSetting(dl, s, x0 + (1 - outCubic(fa)) * 24, y0 + 58 + k * 34, x1, live && inView && m.openA > 0.9, dt);
-      });
-      GA = g;
-      dl.PopClipRect();
-    }
+  // Enabled modules invert to white; the rest stay black.
+  if (m.onA > 0.01) dl.AddRectFilled(V(x0, y0), V(x1, y0 + MOD_H), C(WHITE_, 255 * m.onA));
+  if (m.hov > 0.01) dl.AddRectFilled(V(x0, y0), V(x1, y0 + MOD_H), C(WHITE_, 9 * m.hov * (1 - m.onA)));
+  const tc = mixc(mixc(DIM, TEXT, m.hov), [10, 10, 12], m.onA);
+  text(dl, x0 + 12, y0 + 5, 13, C(tc), m.name);
+  if (m.key && m.hov > 0.02) text(dl, x1 - 32 - textW(11, m.key), y0 + 7, 11, C(tc, 170 * m.hov), m.key);
+  if (m.settings.length) {
+    const dc = C(mixc(mixc(MUTE, TEXT, m.hov), [10, 10, 12], m.onA));
+    for (let k = -1; k <= 1; k++) dl.AddCircleFilled(V(dx, y0 + MOD_H / 2 + k * 4), 1.2, dc, 8);
   }
-  GA = saveGA;
+
+  let h = MOD_H;
+  if (m.openA > 0.02) {
+    const eh = sh * m.openA;
+    dl.PushClipRect(V(x0, y0 + MOD_H), V(x1, y0 + MOD_H + eh), true);
+    dl.AddRectFilled(V(x0, y0 + MOD_H), V(x1, y0 + MOD_H + eh), C(SETBG));
+    let y = y0 + MOD_H + 4;
+    const g = GA;
+    m.settings.forEach((s, k) => {
+      GA = g * clamp(m.openA * 1.6 - k * 0.15, 0, 1);
+      y += drawSetting(dl, s, x0, y, x1, canHit && m.openA > 0.9, dt);
+    });
+    GA = g;
+    dl.PopClipRect();
+    h += eh;
+  }
   return h;
 }
 
-// ---- The window --------------------------------------------------------------------------------
+// ---- Category panels ---------------------------------------------------------------------------
 
 /** @param {ImDrawList} dl */
-function drawGui(dl, dt, t, sw, sh) {
-  gui.w = clamp(sw - 40, 660, 820);
-  gui.h = clamp(sh - 40, 420, 540);
+function drawPanel(dl, c, ci, rank, pw, live, dt) {
+  // Panels drop in one after another when the GUI opens.
+  const p = outCubic((gui.openT - rank * 0.05) / 0.4);
+  const save = GA;
+  GA *= p;
+  const x0 = c.x, y0 = c.y - (1 - p) * 24, x1 = x0 + pw;
+
+  c.collA = damp(c.collA, c.collapsed ? 0 : 1, 14, dt);
+  let content = 0;
+  c.mods.forEach((m) => { content += MOD_H + settingsH(m) * m.openA; });
+  c.h = HEAD_H + content * c.collA + 4 * c.collA;
+  const y1 = y0 + c.h;
+
+  for (let k = 1; k < 5; k++) dl.AddRectFilled(V(x0 - k, y0 - k + 4), V(x1 + k, y1 + k + 4), C([0, 0, 0], 14), 3 + k);
+  dl.AddRectFilled(V(x0, y0), V(x1, y1), C(BG), 3);
+  dl.AddRectFilled(V(x0, y0), V(x1, y0 + HEAD_H), C(HEADER), 3, c.collA > 0.02 ? ImDrawFlags.RoundCornersTop : ImDrawFlags.RoundCornersAll);
+  dl.AddLine(V(x0, y0 + HEAD_H - 0.5), V(x1, y0 + HEAD_H - 0.5), C(LINE), 1);
+  icon(dl, ci, x0 + 20, y0 + HEAD_H / 2, C(TEXT));
+  text(dl, x0 + 40, y0 + 7, 14.5, C(TEXT), c.name);
+  const sc = 1 - 2 * c.collA; // chevron points down when collapsed, up when open
+  const cc = C(DIM);
+  dl.AddLine(V(x1 - 22, y0 + HEAD_H / 2 + sc * 2.5), V(x1 - 17, y0 + HEAD_H / 2 - sc * 2.5), cc, 1.5);
+  dl.AddLine(V(x1 - 17, y0 + HEAD_H / 2 - sc * 2.5), V(x1 - 12, y0 + HEAD_H / 2 + sc * 2.5), cc, 1.5);
+
+  if (c.collA > 0.02) {
+    dl.PushClipRect(V(x0, y0 + HEAD_H), V(x1, y1), true);
+    const canHit = live && gui.top === c && c.collA > 0.95;
+    let y = y0 + HEAD_H;
+    c.mods.forEach((m, mi) => {
+      const g = GA;
+      GA *= outCubic((gui.openT - rank * 0.05 - 0.1 - mi * 0.03) / 0.3);
+      y += drawModule(dl, m, mi, x0, y, x1, canHit, dt);
+      GA = g;
+    });
+    dl.PopClipRect();
+  }
+  dl.AddRect(V(x0, y0), V(x1, y1), C(LINE, 120), 3, 1);
+  GA = save;
+}
+
+// ---- The GUI -----------------------------------------------------------------------------------
+
+/** @param {ImDrawList} dl */
+function drawGui(dl, dt, sw, sh) {
+  const gap = 12;
+  const pw = clamp(Math.floor((sw - 60 - 5 * gap) / 6), 136, 168);
   if (!gui.placed) {
-    gui.x = (sw - gui.w) / 2;
-    gui.y = (sh - gui.h) / 2;
+    const total = 6 * pw + 5 * gap;
+    CATS.forEach((c, i) => { c.x = (sw - total) / 2 + i * (pw + gap); c.y = 70; c.collapsed = false; c.collA = 1; c.h = 300; });
     gui.placed = true;
   }
-  spring(gui.openS, gui.open ? 1 : 0, dt);
-  gui.alpha = damp(gui.alpha, gui.open ? 1 : 0, 12, dt);
-  gui.flashT += dt;
-  if (!inp.down) { gui.active = null; gui.dragging = false; }
-  if (gui.alpha < 0.01) return;
+  if (gui.open && !gui.wasOpen) gui.openT = 0;
+  gui.wasOpen = gui.open;
+  gui.openT += dt;
+  gui.o = damp(gui.o, gui.open ? 1 : 0, 12, dt);
 
-  GA = clamp(gui.alpha, 0, 1);
-  const live = gui.open && gui.alpha > 0.85;
-  const W = gui.w, H = gui.h;
-  const wx = gui.x, wy = gui.y + (1 - gui.openS.x) * 70;
-  const t0 = V(wx, wy), t1 = V(wx + W, wy + H);
+  if (!inp.down) {
+    // A header press that never turned into a drag collapses the panel.
+    if (gui.drag && !gui.drag.moved) gui.drag.p.collapsed = !gui.drag.p.collapsed;
+    gui.drag = null;
+    gui.active = null;
+  }
+  if (gui.o < 0.01) return;
 
-  // Drag by the header.
-  if (live && inp.click && hot(wx, wy, wx + W - 56, wy + HEAD)) {
-    gui.dragging = true;
-    gui.dx = inp.x - gui.x;
-    gui.dy = inp.y - gui.y;
-  }
-  if (gui.dragging) {
-    gui.x = clamp(inp.x - gui.dx, -W + 120, sw - 120);
-    gui.y = clamp(inp.y - gui.dy, 0, sh - 60);
-  }
+  GA = gui.o;
+  const live = gui.open && gui.o > 0.9;
 
-  // Shadow, body, sidebar.
-  for (let k = 1; k < 7; k++) dl.AddRectFilled(V(wx - k * 3, wy - k * 3 + 12), V(wx + W + k * 3, wy + H + k * 3 + 12), C([0, 0, 0], 13), 16 + k * 3);
-  dl.AddRectFilled(t0, t1, C([9, 12, 19], 246), 14);
-  dl.AddRectFilled(t0, V(wx + SIDE, wy + H), C([5, 8, 13], 255), 14, ImDrawFlags.RoundCornersLeft);
-
-  // Drifting glow blobs and a particle field that reacts to the mouse.
-  dl.PushClipRect(V(wx + 1, wy + 1), V(wx + W - 1, wy + H - 1), true);
-  for (let b = 0; b < 3; b++) {
-    const bx = wx + W * (0.5 + 0.38 * Math.sin(t * 0.3 + b * 2.1));
-    const by = wy + H * (0.5 + 0.3 * Math.cos(t * 0.23 + b * 1.7));
-    for (let r = 0; r < 10; r++) dl.AddCircleFilled(V(bx, by), 50 + r * 20, C(b === 1 ? DEEP : ACC, 2.4), 36);
-  }
-  for (const q of parts) {
-    q.x += q.vx * dt; q.y += q.vy * dt;
-    if (q.y < -6) { q.y = H + 6; q.x = Math.random() * W; }
-    if (q.x < -6) q.x = W + 6;
-    if (q.x > W + 6) q.x = -6;
-    const dx = wx + q.x - inp.x, dy = wy + q.y - inp.y, d = Math.hypot(dx, dy);
-    if (d < 110 && d > 0.1) { q.x += dx / d * (110 - d) * dt * 3; q.y += dy / d * (110 - d) * dt * 3; }
-  }
-  for (let i = 0; i < parts.length; i++) {
-    const q = parts[i];
-    const px = wx + q.x, py = wy + q.y;
-    for (let j = i + 1; j < parts.length; j++) {
-      const d = Math.hypot(q.x - parts[j].x, q.y - parts[j].y);
-      if (d < 85) dl.AddLine(V(px, py), V(wx + parts[j].x, wy + parts[j].y), C(ACC, (1 - d / 85) * 55), 1);
+  // The panel under the mouse (topmost first), so overlapping panels don't both react.
+  gui.top = null;
+  if (live) {
+    for (let k = gui.order.length - 1; k >= 0; k--) {
+      const c = CATS[gui.order[k]];
+      if (hot(c.x, c.y, c.x + pw, c.y + c.h)) { gui.top = c; break; }
     }
-    const dm = Math.hypot(px - inp.x, py - inp.y);
-    if (live && dm < 140) dl.AddLine(V(px, py), V(inp.x, inp.y), C(ACC, (1 - dm / 140) * 130), 1);
-    dl.AddCircleFilled(V(px, py), q.r, C(ACC, 90 + 80 * Math.sin(t * 2 + q.ph)), 10);
   }
-  dl.PopClipRect();
-
-  // Header: spinning hex logo, gradient title, comet along the bottom edge.
-  const lx = wx + 34, ly = wy + 29;
-  hex(dl, lx, ly, 17, t * 0.8, C(ACC, 220), 2);
-  hex(dl, lx, ly, 11, -t * 1.3, C(DEEP, 255), 2);
-  dl.AddCircleFilled(V(lx, ly), 4 + Math.sin(t * 3), C(WHITE), 16);
-  dl.AddCircleFilled(V(lx, ly), 22, C(ACC, 18), 28);
-  gradText(dl, wx + 62, wy + 8, 26, "WADDIE", t * 0.5);
-  text(dl, wx + 64, wy + 38, 11.5, C(GRAY), "CLIENT   1.21.4");
-  const phase = ((t * 0.35) % 1.5 - 0.25) * W;
-  for (let x = 0; x < W; x += 8) {
-    const hl = Math.exp(-Math.pow((x - phase) / 90, 2));
-    dl.AddRectFilled(V(wx + x, wy + HEAD), V(wx + Math.min(x + 8, W), wy + HEAD + 2), C(mixc(ACC, WHITE, hl * hl), 40 + 215 * hl));
+  if (live && inp.click && gui.top && hot(gui.top.x, gui.top.y, gui.top.x + pw, gui.top.y + HEAD_H)) {
+    const c = gui.top;
+    gui.drag = { p: c, dx: inp.x - c.x, dy: inp.y - c.y, sx: inp.x, sy: inp.y, moved: false };
+    gui.order = gui.order.filter((i) => CATS[i] !== c).concat(CATS.indexOf(c));
   }
-
-  // FPS chip and the close button.
-  const fps = "FPS " + Math.round(ImGui.GetIO().Framerate);
-  const cw = textW(12.5, fps) + 20, fx0 = wx + W - 56 - cw - 8;
-  dl.AddRectFilled(V(fx0, wy + 18), V(fx0 + cw, wy + 40), C([20, 28, 40]), 11);
-  text(dl, fx0 + 10, wy + 22, 12.5, C(ACC), fps);
-  const overX = live && hot(wx + W - 46, wy + 14, wx + W - 14, wy + 44);
-  gui.closeHov = damp(gui.closeHov, overX ? 1 : 0, 14, dt);
-  if (overX && inp.click) toggleGui(false);
-  const xc = mixc(GRAY, [255, 90, 110], gui.closeHov);
-  dl.AddCircleFilled(V(wx + W - 30, wy + 29), 15, C([255, 90, 110], 30 * gui.closeHov), 24);
-  dl.AddLine(V(wx + W - 36, wy + 23), V(wx + W - 24, wy + 35), C(xc), 2);
-  dl.AddLine(V(wx + W - 24, wy + 23), V(wx + W - 36, wy + 35), C(xc), 2);
-
-  // Sidebar: a pill on a spring slides to the selected category and stretches while it moves.
-  spring(gui.sel, HEAD + 18 + gui.cat * SIDE_ITEM, dt);
-  const stretch = clamp(Math.abs(gui.sel.v) * 0.035, 0, 16);
-  const py0 = wy + gui.sel.x - stretch / 2, py1 = wy + gui.sel.x + 44 + stretch / 2;
-  dl.AddRectFilled(V(wx + 10, py0), V(wx + SIDE - 10, py1), C(ACC, 24), 10);
-  dl.AddRect(V(wx + 10, py0), V(wx + SIDE - 10, py1), C(ACC, 80), 10, 1);
-  dl.AddRectFilled(V(wx + 10, py0 + 10), V(wx + 13.5, py1 - 10), C(ACC), 2);
-  for (let k = 1; k < 4; k++) dl.AddRect(V(wx + 10 - k, py0 - k), V(wx + SIDE - 10 + k, py1 + k), C(ACC, 20 - k * 5), 10 + k, 1.5);
-
-  CATS.forEach((c, i) => {
-    const iy = wy + HEAD + 18 + i * SIDE_ITEM;
-    const over = live && hot(wx + 10, iy, wx + SIDE - 10, iy + 44);
-    if (over && inp.click && gui.cat !== i) {
-      gui.catDir = i > gui.cat ? 1 : -1;
-      gui.cat = i; gui.catT = 0; gui.scroll = 0; gui.scrollT = 0;
+  if (gui.drag && inp.down) {
+    const d = gui.drag;
+    if (Math.hypot(inp.x - d.sx, inp.y - d.sy) > 4) d.moved = true;
+    if (d.moved) {
+      d.p.x = clamp(inp.x - d.dx, -pw + 40, sw - 40);
+      d.p.y = clamp(inp.y - d.dy, 0, sh - HEAD_H);
     }
-    c.hov = damp(c.hov, over ? 1 : 0, 14, dt);
-    c.sel = damp(c.sel, gui.cat === i ? 1 : 0, 12, dt);
-    const tc = mixc(mixc(GRAY, WHITE, c.hov * 0.8), ACC, c.sel);
-    icon(dl, i, wx + 34 + 2 * c.hov, iy + 22, C(tc));
-    text(dl, wx + 58 + 2 * c.hov, iy + 13, 16, C(tc), c.name);
-    const n = c.mods.filter((m) => m.on).length;
-    const label = String(n);
-    const bw = textW(12, label) + 12;
-    dl.AddRectFilled(V(wx + SIDE - 20 - bw, iy + 14), V(wx + SIDE - 20, iy + 31), C(n ? ACC : [30, 40, 56], n ? 40 : 255), 8);
-    text(dl, wx + SIDE - 20 - bw + 6, iy + 15, 12, C(n ? ACC : GRAY), label);
-  });
-
-  // Profile card with a pixel-art Steve head.
-  const pyy = wy + H - FOOT - 62;
-  dl.AddRectFilled(V(wx + 10, pyy), V(wx + SIDE - 10, pyy + 52), C([14, 20, 30]), 10);
-  for (let r = 0; r < 8; r++) for (let q = 0; q < 8; q++) {
-    dl.AddRectFilled(V(wx + 20 + q * 4.5, pyy + 8 + r * 4.5), V(wx + 20 + (q + 1) * 4.5, pyy + 8 + (r + 1) * 4.5), C(STEVE_COL[STEVE[r][q]]));
-  }
-  dl.AddRect(V(wx + 20, pyy + 8), V(wx + 56, pyy + 44), C(ACC, 150), 0, 1);
-  text(dl, wx + 66, pyy + 10, 14, C(WHITE), "CloudWaddie");
-  text(dl, wx + 66, pyy + 29, 11.5, C(ACC), "Premium");
-
-  // Footer.
-  dl.AddLine(V(wx + 14, wy + H - FOOT), V(wx + W - 14, wy + H - FOOT), C(WHITE, 12), 1);
-  const nOn = ALL.filter((m) => m.on).length;
-  text(dl, wx + SIDE + 16, wy + H - FOOT + 8, 12.5, C(GRAY), nOn + " of " + ALL.length + " modules enabled");
-  const hint = "Right click: settings   Insert: toggle GUI";
-  text(dl, wx + W - 16 - textW(12.5, hint), wy + H - FOOT + 8, 12.5, C([100, 112, 130]), hint);
-
-  // Content area: title row, then the scrolling module list.
-  const cat = CATS[gui.cat];
-  gui.catT += dt;
-  ripples.forEach((r) => { r.t += dt; });
-  ripples = ripples.filter((r) => r.t < 0.8);
-  const cx0 = wx + SIDE + 16, cx1 = wx + W - 22;
-  const ty = wy + HEAD + 14;
-  const ta = outCubic(gui.catT / 0.4);
-  const sg = GA;
-  GA *= ta;
-  text(dl, cx0 + (1 - ta) * 20 * gui.catDir, ty, 22, C(WHITE), cat.name);
-  const on = cat.mods.filter((m) => m.on).length;
-  text(dl, cx0 + textW(22, cat.name) + 12 + (1 - ta) * 20 * gui.catDir, ty + 6, 12.5, C(ACC), on + " / " + cat.mods.length + " active");
-  GA = sg;
-
-  const view = { x0: cx0 - 6, y0: wy + HEAD + 48, x1: wx + W - 8, y1: wy + H - FOOT - 6 };
-  const viewH = view.y1 - view.y0;
-  const maxS = Math.max(0, gui.total - viewH);
-  if (live && hot(view.x0, view.y0, view.x1, view.y1)) gui.scrollT -= inp.wheel * 70;
-  gui.scrollT = clamp(gui.scrollT, 0, maxS);
-  gui.scroll = damp(gui.scroll, gui.scrollT, 14, dt);
-
-  dl.PushClipRect(V(view.x0, view.y0), V(view.x1, view.y1), true);
-  let y = view.y0 + 4 - gui.scroll;
-  cat.mods.forEach((m, i) => { y += drawCard(dl, m, i, cx0, y, cx1, view, live, dt) + 9; });
-  gui.total = y + gui.scroll - view.y0;
-  dl.PopClipRect();
-
-  if (maxS > 1) {
-    const th = Math.max(30, viewH * viewH / gui.total);
-    const ty0 = view.y0 + (viewH - th) * (gui.scroll / maxS);
-    dl.AddRectFilled(V(wx + W - 12, view.y0), V(wx + W - 9, view.y1), C(WHITE, 10), 2);
-    dl.AddRectFilled(V(wx + W - 12, ty0), V(wx + W - 9, ty0 + th), C(ACC, 170), 2);
   }
 
-  // Border glow and the ring that bursts out when the GUI opens.
-  const pulse = 0.65 + 0.35 * Math.sin(t * 2);
-  for (let k = 0; k < 6; k++) dl.AddRect(V(wx - k, wy - k), V(wx + W + k, wy + H + k), C(ACC, (70 - k * 12) * pulse), 14 + k, 1.5);
-  dl.AddRect(t0, t1, C(ACC, 150), 14, 1.2);
-  if (gui.flashT < 0.7) {
-    const k = gui.flashT / 0.7, e = outCubic(k) * 60;
-    dl.AddRect(V(wx - e, wy - e), V(wx + W + e, wy + H + e), C(ACC, 160 * (1 - k)), 14 + e, 2);
-  }
+  dl.AddRectFilled(V(0, 0), V(sw, sh), C([0, 0, 0], 120));
+
+  gui.order.forEach((ci, rank) => drawPanel(dl, CATS[ci], ci, rank, pw, live, dt));
+
   GA = 1;
 }
 
-// A pulsing orb in the corner that brings the GUI back.
+// When the GUI is hidden, a small hint in the corner brings it back.
 /** @param {ImDrawList} dl */
-function drawOrb(dl, dt, t, sh) {
-  const a = 1 - clamp(gui.alpha * 1.5, 0, 1);
-  if (a < 0.01) return;
-  GA = a;
-  const cx = 44, cy = sh - 44;
-  const over = !gui.open && Math.hypot(inp.x - cx, inp.y - cy) < 26;
-  gui.orbHov = damp(gui.orbHov, over ? 1 : 0, 14, dt);
-  if (over && inp.click) toggleGui(true);
-  for (let k = 0; k < 3; k++) {
-    const p = (t * 0.5 + k / 3) % 1;
-    dl.AddCircle(V(cx, cy), 20 + p * 26, C(ACC, 150 * (1 - p)), 40, 2);
-  }
-  dl.AddCircleFilled(V(cx, cy), 28 + 3 * gui.orbHov, C(ACC, 30), 32);
-  dl.AddCircleFilled(V(cx, cy), 20 + 2 * gui.orbHov, C([10, 16, 26]), 32);
-  hex(dl, cx, cy, 11, t, C(ACC), 2);
-  hex(dl, cx, cy, 6, -t * 1.4, C(DEEP), 2);
-  text(dl, cx + 36, cy - 8, 13, C(GRAY, 200 * gui.orbHov + 55), "Insert");
+function drawHint(dl, dt, sh) {
+  GA = 1 - clamp(gui.o * 1.5, 0, 1);
+  if (GA < 0.01) { GA = 1; return; }
+  const label = "Insert  to open";
+  const w = textW(12.5, label) + 28, x = 12, y = sh - 38;
+  const over = !gui.open && hot(x, y, x + w, y + 26);
+  gui.hintHov = damp(gui.hintHov, over ? 1 : 0, 16, dt);
+  if (over && inp.click) gui.open = true;
+  dl.AddRectFilled(V(x, y), V(x + w, y + 26), C(BG, 225), 3);
+  dl.AddRect(V(x, y), V(x + w, y + 26), C(mixc(LINE, ACC, gui.hintHov)), 3, 1);
+  text(dl, x + 14, y + 5, 12.5, C(mixc(DIM, ACC, gui.hintHov)), label);
   GA = 1;
 }
 
 function frame() {
   const io = ImGui.GetIO();
   const dt = Math.min(io.DeltaTime, 1 / 30);
-  const t = ImGui.GetTime();
   const dl = ImGui.GetForegroundDrawList();
   const mp = ImGui.GetMousePos();
   inp.x = mp.x; inp.y = mp.y;
@@ -893,26 +710,11 @@ function frame() {
   inp.rclick = ImGui.IsMouseClicked(1);
   inp.down = ImGui.IsMouseDown(0);
   inp.wheel = io.MouseWheel;
-  if (ImGui.IsKeyPressed(ImGuiKey._Insert, false)) toggleGui(!gui.open);
+  if (ImGui.IsKeyPressed(ImGuiKey._Insert, false)) gui.open = !gui.open;
 
-  drawHud(dl, dt, t, io.DisplaySize.x, io.DisplaySize.y);
-  drawGui(dl, dt, t, io.DisplaySize.x, io.DisplaySize.y);
-  drawOrb(dl, dt, t, io.DisplaySize.y);
-
-  // A glowing cursor with a fading trail while the GUI is up.
-  trail.push({ x: inp.x, y: inp.y });
-  if (trail.length > 16) trail.shift();
-  const ca = clamp(gui.alpha, 0, 1);
-  if (ca > 0.05) {
-    GA = ca;
-    trail.forEach((p, i) => {
-      const k = (i + 1) / trail.length;
-      dl.AddCircleFilled(V(p.x, p.y), 1 + 4 * k, C(ACC, 60 * k * k), 12);
-    });
-    dl.AddCircle(V(inp.x, inp.y), 9 + (inp.down ? -3 : 0), C(ACC, 230), 20, 1.8);
-    dl.AddCircleFilled(V(inp.x, inp.y), 2.2, C(WHITE), 10);
-    GA = 1;
-  }
+  drawHud(dl, dt, io.DisplaySize.x, io.DisplaySize.y);
+  drawGui(dl, dt, io.DisplaySize.x, io.DisplaySize.y);
+  drawHint(dl, dt, io.DisplaySize.y);
 }
 `,
     "Blank": `function frame() {
