@@ -287,17 +287,42 @@ const hot = (x0, y0, x1, y1) => inp.x >= x0 && inp.x <= x1 && inp.y >= y0 && inp
 // Roboto ships with the playground (see Assets); fall back to the default font without it.
 const FONT = assets.has("Roboto-Medium.ttf") ? assets.font("Roboto-Medium.ttf") : null;
 
+// dl.AddText and ImGui.CalcTextSize don't work in this build (an empty text_end gets passed through),
+// so text goes through ImGui.Text on the overlay window, and widths are measured by laying text out off-screen.
 /** @param {ImDrawList} dl */
 function text(dl, x, y, size, c, s) {
   ImGui.PushFont(FONT || ImGui.GetFont(), size);
-  dl.AddText(V(x, y), c, s);
+  ImGui.SetCursorScreenPos(V(x, y));
+  ImGui.PushStyleColor(ImGuiCol.Text, c);
+  ImGui.Text(s);
+  ImGui.PopStyleColor();
   ImGui.PopFont();
 }
+const WIDTHS = new Map();
 function textW(size, s) {
-  ImGui.PushFont(FONT || ImGui.GetFont(), size);
-  const w = ImGui.CalcTextSize(s).x;
-  ImGui.PopFont();
+  const key = size + "|" + s;
+  let w = WIDTHS.get(key);
+  if (w === undefined) {
+    ImGui.PushFont(FONT || ImGui.GetFont(), size);
+    ImGui.SetCursorScreenPos(V(-4000, -4000));
+    ImGui.Text(s);
+    w = ImGui.GetItemRectSize().x;
+    ImGui.PopFont();
+    if (WIDTHS.size > 3000) WIDTHS.clear();
+    WIDTHS.set(key, w);
+  }
   return w;
+}
+// A full-screen window with no background that ignores the mouse: everything below draws on it.
+function overlay(draw) {
+  ImGui.SetNextWindowPos(V(0, 0));
+  ImGui.SetNextWindowSize(ImGui.GetIO().DisplaySize);
+  ImGui.PushStyleVarImVec2(ImGuiStyleVar.WindowPadding, V(0, 0));
+  const F = ImGuiWindowFlags;
+  ImGui.Begin("##clickgui", null, F.NoTitleBar | F.NoResize | F.NoMove | F.NoScrollbar | F.NoScrollWithMouse | F.NoBackground | F.NoSavedSettings | F.NoInputs | F.NoNav);
+  ImGui.PopStyleVar();
+  draw(ImGui.GetWindowDrawList());
+  ImGui.End();
 }
 // The one gradient: white sliding into the accent, applied per vertex after the text is drawn.
 /** @param {ImDrawList} dl */
@@ -703,7 +728,6 @@ function drawHint(dl, dt, sh) {
 function frame() {
   const io = ImGui.GetIO();
   const dt = Math.min(io.DeltaTime, 1 / 30);
-  const dl = ImGui.GetForegroundDrawList();
   const mp = ImGui.GetMousePos();
   inp.x = mp.x; inp.y = mp.y;
   inp.click = ImGui.IsMouseClicked(0);
@@ -712,9 +736,564 @@ function frame() {
   inp.wheel = io.MouseWheel;
   if (ImGui.IsKeyPressed(ImGuiKey._Insert, false)) gui.open = !gui.open;
 
-  drawHud(dl, dt, io.DisplaySize.x, io.DisplaySize.y);
-  drawGui(dl, dt, io.DisplaySize.x, io.DisplaySize.y);
-  drawHint(dl, dt, io.DisplaySize.y);
+  overlay((dl) => {
+    drawHud(dl, dt, io.DisplaySize.x, io.DisplaySize.y);
+    drawGui(dl, dt, io.DisplaySize.x, io.DisplaySize.y);
+    drawHint(dl, dt, io.DisplaySize.y);
+  });
+}
+`,
+    "Dynamic island": `// Dynamic island: a glass pill at the top of the screen that morphs between states.
+// Use the "Dynamic island" window to trigger them. Each state has its own size, which is
+// animated on a spring, and its own content, which cross-fades. Everything is a draw list call.
+
+const FONT = assets.has("Roboto-Medium.ttf") ? assets.font("Roboto-Medium.ttf") : null;
+
+let GA = 1; // global alpha, multiplied into every color
+
+const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
+const lerp = (a, b, t) => a + (b - a) * t;
+const damp = (a, b, speed, dt) => a + (b - a) * (1 - Math.exp(-speed * dt));
+const mixc = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
+const C = (c, a = 255) => IM_COL32(Math.round(c[0]), Math.round(c[1]), Math.round(c[2]), Math.round(clamp(a * GA, 0, 255)));
+const V = (x, y) => new ImVec2(x, y);
+const WHITE = [255, 255, 255], BLACK = [0, 0, 0];
+
+// An underdamped spring: x chases target and overshoots a little, which gives the island its bounce.
+function spring(s, target, dt) {
+  const n = Math.max(1, Math.ceil(dt * 120)), h = dt / n;
+  for (let i = 0; i < n; i++) {
+    s.v += ((target - s.x) * 190 - s.v * 15) * h;
+    s.x += s.v * h;
+  }
+}
+
+// ---- Looks -------------------------------------------------------------------------------------
+
+const STYLES = {
+  Sky: {
+    top: [142, 186, 252], bot: [58, 112, 224], edge: [255, 255, 255], edgeA: 170,
+    text: [255, 255, 255], sub: [226, 240, 255], subA: 210, track: [14, 40, 110], shadow: [10, 30, 100],
+    shadowText: true, sky: [[112, 164, 246], [196, 220, 252]], cloudA: 46,
+  },
+  Dark: {
+    top: [58, 62, 78], bot: [22, 24, 33], edge: [255, 255, 255], edgeA: 46,
+    text: [246, 248, 252], sub: [176, 184, 202], subA: 255, track: [0, 0, 0], shadow: [0, 0, 0],
+    shadowText: false, sky: [[16, 18, 26], [36, 42, 58]], cloudA: 8,
+  },
+};
+let S = STYLES.Sky;
+
+const BLOCKS = [
+  { name: "Grass", c: [96, 172, 52] },
+  { name: "Stone", c: [138, 140, 148] },
+  { name: "Planks", c: [190, 146, 80] },
+  { name: "Obsidian", c: [92, 48, 150] },
+  { name: "Wool", c: [214, 62, 62] },
+  { name: "Lapis", c: [48, 92, 214] },
+  { name: "Gold", c: [250, 200, 48] },
+];
+
+// An 8x8 face, like a Minecraft skin: H hair, S skin, W eye white, B iris, N nose, M mouth.
+const FACE = ["HHHHHHHH", "HHHHHHHH", "HSSSSSSH", "SSSSSSSS", "SBWSSWBS", "SSSNNSSS", "SSMMMMSS", "SSSSSSSS"];
+const SKINS = [
+  { name: "Steve", H: [68, 44, 26], S: [196, 138, 102], W: [255, 255, 255], B: [70, 64, 160], N: [166, 104, 76], M: [116, 66, 50] },
+  { name: "Dream", H: [210, 150, 60], S: [226, 178, 140], W: [255, 255, 255], B: [40, 120, 70], N: [196, 144, 108], M: [150, 90, 76] },
+  { name: "Alex", H: [28, 22, 20], S: [128, 86, 60], W: [255, 255, 255], B: [30, 30, 30], N: [104, 66, 46], M: [78, 46, 36] },
+  { name: "Notch", H: [150, 150, 154], S: [210, 160, 124], W: [255, 255, 255], B: [60, 90, 170], N: [180, 128, 96], M: [130, 80, 66] },
+];
+
+const NOTIFY = {
+  info: { c: [70, 150, 255], title: "Config loaded", msg: "default.json, 42 modules" },
+  success: { c: [58, 198, 118], title: "Config saved", msg: "Written to default.json" },
+  warn: { c: [255, 184, 56], title: "Low durability", msg: "Diamond sword is at 12%", glow: [255, 184, 56] },
+  error: { c: [255, 80, 92], title: "Disconnected", msg: "Connection timed out", glow: [255, 80, 92] },
+};
+const MODULES = ["KillAura", "Scaffold", "Sprint", "Fly", "ESP", "Velocity", "Speed"];
+
+// Every state: its size and what it needs. Content lives in DRAW below, keyed by id.
+const STATES = [
+  { id: "idle", label: "Idle", w: 312, h: 46 },
+  { id: "scaffold", label: "Scaffold", w: 352, h: 48 },
+  { id: "fight", label: "Fight", w: 258, h: 46 },
+  { id: "toggle", label: "Module toggle", w: 252, h: 46 },
+  { id: "notify", label: "Notification", w: 322, h: 54 },
+  { id: "music", label: "Music", w: 344, h: 62 },
+  { id: "timer", label: "Timer", w: 214, h: 46 },
+  { id: "loading", label: "Loading", w: 304, h: 52 },
+  { id: "health", label: "Low health", w: 212, h: 46, glow: [255, 70, 84] },
+  { id: "ping", label: "High ping", w: 224, h: 46, glow: [255, 180, 50] },
+  { id: "chat", label: "Chat", w: 344, h: 54 },
+  { id: "rec", label: "Recording", w: 184, h: 40, glow: [255, 70, 84] },
+  { id: "speed", label: "Speed", w: 224, h: 46 },
+  { id: "mini", label: "Minimized", w: 66, h: 36 },
+];
+const BY_ID = Object.fromEntries(STATES.map((s) => [s.id, s]));
+
+const sim = {
+  block: 0, blocks: 64, trail: 1, run: [true],
+  fight: { hp: 1, trail: 1, time: 15, flash: 0, skin: 0, next: 0.8 },
+  tg: 1, toggleOn: true, module: "KillAura", kind: "info",
+  load: 0, rec: 0,
+  auto: [false], interval: [3], cycleT: 0,
+  style: "Sky", backdrop: [true],
+};
+const isl = {
+  id: "idle", w: { x: 312, v: 0 }, h: { x: 46, v: 0 },
+  alpha: Object.fromEntries(STATES.map((s) => [s.id, s.id === "idle" ? 1 : 0])),
+  gc: [255, 70, 84], ga: 0,
+};
+
+function newTarget() {
+  const f = sim.fight;
+  f.hp = 1; f.trail = 1; f.time = 15; f.skin = (f.skin + 1) % SKINS.length; f.next = 0.8;
+}
+function hit() {
+  const f = sim.fight;
+  f.hp -= 0.07 + Math.random() * 0.08;
+  f.flash = 1;
+  f.next = 0.5 + Math.random() * 0.7;
+  if (f.hp <= 0.03) newTarget();
+}
+function go(id, payload) {
+  if (id === "fight" && isl.id !== "fight") newTarget();
+  if (id === "rec" && isl.id !== "rec") sim.rec = 0;
+  if (id === "loading" && isl.id !== "loading") sim.load = 0;
+  if (id === "toggle") {
+    if (payload !== undefined) sim.toggleOn = payload;
+    sim.module = MODULES[Math.floor(Math.random() * MODULES.length)];
+  }
+  if (id === "notify" && payload) sim.kind = payload;
+  isl.id = id;
+  sim.cycleT = 0;
+}
+
+function updateSim(dt, t) {
+  S = STYLES[sim.style];
+  const f = sim.fight;
+  if (isl.id === "scaffold" && sim.run[0]) {
+    sim.blocks -= (3.8 + 0.8 * Math.sin(t * 1.7)) * dt;
+    if (sim.blocks <= 0) sim.blocks = 64;
+  }
+  const frac = sim.blocks / 64;
+  sim.trail = sim.trail < frac ? frac : damp(sim.trail, frac, 2.4, dt);
+
+  if (isl.id === "fight" && sim.run[0]) {
+    f.time -= dt;
+    f.next -= dt;
+    if (f.next <= 0) hit();
+    if (f.time <= 0) newTarget();
+  }
+  f.flash = damp(f.flash, 0, 8, dt);
+  f.trail = f.trail < f.hp ? f.hp : damp(f.trail, f.hp, 2.6, dt);
+
+  sim.tg = damp(sim.tg, sim.toggleOn ? 1 : 0, 14, dt);
+  if (isl.id === "loading") { sim.load += dt / 6; if (sim.load > 1) sim.load = 0; }
+  if (isl.id === "rec") sim.rec += dt;
+  if (sim.auto[0]) {
+    sim.cycleT += dt;
+    if (sim.cycleT >= sim.interval[0]) {
+      const i = STATES.findIndex((s) => s.id === isl.id);
+      go(STATES[(i + 1) % STATES.length].id);
+    }
+  }
+}
+
+// ---- Drawing helpers ---------------------------------------------------------------------------
+
+const ink = (a = 255) => C(S.text, a);
+const dim = (a = 1) => C(S.sub, S.subA * a);
+
+// dl.AddText and ImGui.CalcTextSize don't work in this build (an empty text_end gets passed through),
+// so text goes through ImGui.Text on the overlay window, and widths are measured by laying text out off-screen.
+function txt(dl, x, y, size, col, s) {
+  ImGui.PushFont(FONT || ImGui.GetFont(), size);
+  if (S.shadowText) {
+    ImGui.SetCursorScreenPos(V(x, y + 1));
+    ImGui.PushStyleColor(ImGuiCol.Text, C(S.shadow, 120));
+    ImGui.Text(s);
+    ImGui.PopStyleColor();
+  }
+  ImGui.SetCursorScreenPos(V(x, y));
+  ImGui.PushStyleColor(ImGuiCol.Text, col);
+  ImGui.Text(s);
+  ImGui.PopStyleColor();
+  ImGui.PopFont();
+}
+const WIDTHS = new Map();
+function textW(size, s) {
+  const key = size + "|" + s;
+  let w = WIDTHS.get(key);
+  if (w === undefined) {
+    ImGui.PushFont(FONT || ImGui.GetFont(), size);
+    ImGui.SetCursorScreenPos(V(-4000, -4000));
+    ImGui.Text(s);
+    w = ImGui.GetItemRectSize().x;
+    ImGui.PopFont();
+    if (WIDTHS.size > 3000) WIDTHS.clear();
+    WIDTHS.set(key, w);
+  }
+  return w;
+}
+// Two stacked lines, centered on cy.
+/** @param {ImDrawList} dl */
+function two(dl, x, cy, top, bottom, size = 14) {
+  txt(dl, x, cy - size - 1, size, ink(), top);
+  txt(dl, x, cy + 1, size - 2, dim(), bottom);
+}
+
+// A rounded shape with a vertical gradient: draw it once, then recolor each vertex by its height.
+// The antialiasing fringe vertices keep their own alpha, so the edge stays smooth.
+/** @param {ImDrawList} dl */
+function glass(dl, x0, y0, x1, y1, r, top, bot) {
+  const first = dl.VtxCount, h = y1 - y0;
+  dl.AddRectFilled(V(x0, y0), V(x1, y1), C(WHITE), r);
+  for (let i = first; i < dl.VtxCount; i++) {
+    const a = dl.GetVtxColor(i) >>> 24;
+    const c = mixc(top, bot, clamp((dl.GetVtxPos(i).y - y0) / h, 0, 1));
+    dl.SetVtxColor(i, IM_COL32(Math.round(c[0]), Math.round(c[1]), Math.round(c[2]), a));
+  }
+}
+// A soft white sheen that fades out over the top half.
+/** @param {ImDrawList} dl */
+function sheen(dl, x0, y0, x1, y1, r, strength) {
+  const first = dl.VtxCount, h = (y1 - y0) * 0.55;
+  dl.AddRectFilled(V(x0 + 1.5, y0 + 1.5), V(x1 - 1.5, y1 - 1.5), C(WHITE), r);
+  for (let i = first; i < dl.VtxCount; i++) {
+    const a = dl.GetVtxColor(i) >>> 24;
+    const k = Math.max(0, 1 - (dl.GetVtxPos(i).y - y0) / h);
+    dl.SetVtxColor(i, IM_COL32(255, 255, 255, Math.round(a / 255 * strength * k)));
+  }
+}
+
+/** @param {ImDrawList} dl */
+function cloud(dl, cx, cy, s, c) {
+  dl.AddCircleFilled(V(cx - 5.5 * s, cy + 1.5 * s), 4.5 * s, c, 20);
+  dl.AddCircleFilled(V(cx - 0.5 * s, cy - 2.5 * s), 6.5 * s, c, 24);
+  dl.AddCircleFilled(V(cx + 5.5 * s, cy + 0.5 * s), 5 * s, c, 20);
+  dl.AddRectFilled(V(cx - 5.5 * s, cy + 1 * s), V(cx + 5.5 * s, cy + 6 * s), c, 2 * s);
+}
+/** @param {ImDrawList} dl */
+function logo(dl, cx, cy, r) {
+  dl.AddCircleFilled(V(cx, cy), r + 1.5, C(WHITE, 100), 32);
+  dl.AddCircleFilled(V(cx, cy), r, C([44, 108, 226]), 32);
+  dl.AddCircleFilled(V(cx, cy - r * 0.4), r * 0.6, C(WHITE, 28), 24);
+  cloud(dl, cx, cy - 0.5, r / 16 * 0.95, C(WHITE));
+}
+// An isometric block: top, left and right faces in three shades.
+/** @param {ImDrawList} dl */
+function cube(dl, cx, cy, s, c) {
+  const k = 0.87;
+  const top = C(mixc(c, WHITE, 0.3)), left = C(c), right = C(mixc(c, BLACK, 0.32));
+  dl.AddQuadFilled(V(cx, cy - s), V(cx + s * k, cy - s * 0.5), V(cx, cy), V(cx - s * k, cy - s * 0.5), top);
+  dl.AddQuadFilled(V(cx - s * k, cy - s * 0.5), V(cx, cy), V(cx, cy + s), V(cx - s * k, cy + s * 0.5), left);
+  dl.AddQuadFilled(V(cx, cy), V(cx + s * k, cy - s * 0.5), V(cx + s * k, cy + s * 0.5), V(cx, cy + s), right);
+  dl.AddLine(V(cx, cy), V(cx, cy + s), C(BLACK, 40), 1);
+}
+/** @param {ImDrawList} dl */
+function head(dl, x, y, px, skin, flash) {
+  for (let r = 0; r < 8; r++) for (let q = 0; q < 8; q++) {
+    dl.AddRectFilled(V(x + q * px, y + r * px), V(x + (q + 1) * px + 0.4, y + (r + 1) * px + 0.4), C(skin[FACE[r][q]]));
+  }
+  if (flash > 0.01) dl.AddRectFilled(V(x, y), V(x + 8 * px, y + 8 * px), C([255, 40, 40], 150 * flash));
+  dl.AddRect(V(x - 1, y - 1), V(x + 8 * px + 1, y + 8 * px + 1), C(WHITE, 150), 3, 1.2);
+}
+// A progress bar: the bright part is the value, the dark tail behind it is where it just was.
+/** @param {ImDrawList} dl */
+function bar(dl, x0, x1, cy, h, frac, trail, col) {
+  const w = x1 - x0;
+  const fx = x0 + w * clamp(frac, 0, 1), tx = x0 + w * clamp(Math.max(trail, frac), 0, 1);
+  dl.AddRectFilled(V(x0, cy - h / 2), V(x1, cy + h / 2), C(S.track, 70), h / 2);
+  if (tx - fx > 1) dl.AddRectFilled(V(fx - h / 2, cy - h / 2), V(tx, cy + h / 2), C(mixc(col, BLACK, 0.55)), h / 2);
+  if (fx - x0 > 1) {
+    dl.AddRectFilled(V(x0, cy - h / 2), V(fx, cy + h / 2), C(col), h / 2);
+    dl.AddRectFilled(V(x0 + h / 2, cy - h / 2 + 0.8), V(Math.max(x0 + h / 2, fx - h / 2), cy - h / 2 + 1.8), C(WHITE, 80));
+  }
+}
+const hpColor = (hp) => (hp > 0.5 ? mixc([250, 210, 60], [70, 212, 92], (hp - 0.5) * 2) : mixc([240, 70, 70], [250, 210, 60], hp * 2));
+const clock = (sec) => String(Math.floor(sec / 60)).padStart(2, "0") + ":" + String(Math.floor(sec % 60)).padStart(2, "0");
+
+// ---- State content -----------------------------------------------------------------------------
+// Each function draws one state. Left-anchored items hang off x0, right-anchored ones off x1, so the
+// content stays put while the island is still springing to its new size.
+
+const DRAW = {
+  idle({ dl, x0, cy, t }) {
+    logo(dl, x0 + 27, cy, 16);
+    txt(dl, x0 + 52, cy - 10, 19, ink(), "cloud");
+    dl.AddLine(V(x0 + 116, cy - 12), V(x0 + 116, cy + 12), C(S.text, 55), 1);
+    two(dl, x0 + 130, cy, "stable", "v2.1.1");
+    dl.AddLine(V(x0 + 200, cy - 12), V(x0 + 200, cy + 12), C(S.text, 55), 1);
+    two(dl, x0 + 214, cy, "hypixel", Math.round(24 + 6 * Math.sin(t * 1.3)) + " ms");
+  },
+
+  scaffold({ dl, x0, x1, cy }) {
+    const b = BLOCKS[sim.block], col = mixc(b.c, WHITE, 0.12);
+    dl.AddCircleFilled(V(x0 + 28, cy), 18, C(b.c, 80), 32);
+    dl.AddCircle(V(x0 + 28, cy), 18, C(WHITE, 130), 32, 1.2);
+    cube(dl, x0 + 28, cy - 0.5, 10.5, b.c);
+    bar(dl, x0 + 58, x1 - 106, cy, 6, sim.blocks / 64, sim.trail, col);
+    txt(dl, x1 - 94, cy - 15, 15, ink(), Math.ceil(sim.blocks) + " blocks");
+    txt(dl, x1 - 94, cy + 1, 12, dim(), (3.8 + 0.8 * Math.sin(ImGui.GetTime() * 1.7)).toFixed(1) + " b/s");
+  },
+
+  fight({ dl, x0, x1, cy }) {
+    const f = sim.fight, skin = SKINS[f.skin];
+    head(dl, x0 + 15 + f.flash * Math.sin(ImGui.GetTime() * 70) * 1.6, cy - 13, 3.25, skin, f.flash);
+    txt(dl, x0 + 56, cy - 18, 15, ink(), f.time.toFixed(2) + "s");
+    txt(dl, x1 - 16 - textW(11.5, skin.name), cy - 16, 11.5, dim(), skin.name);
+    bar(dl, x0 + 56, x1 - 16, cy + 9, 6, f.hp, f.trail, hpColor(f.hp));
+  },
+
+  toggle({ dl, x0, cy }) {
+    const k = sim.tg;
+    dl.AddRectFilled(V(x0 + 16, cy - 10), V(x0 + 50, cy + 10), C(mixc([96, 110, 140], [58, 198, 118], k), 255), 10);
+    dl.AddCircleFilled(V(x0 + 27 + k * 14, cy), 7.5, C(WHITE), 20);
+    two(dl, x0 + 64, cy, sim.module, sim.toggleOn ? "Enabled" : "Disabled", 15);
+  },
+
+  notify({ dl, x0, cy }) {
+    const n = NOTIFY[sim.kind], ix = x0 + 30;
+    dl.AddCircleFilled(V(ix, cy), 17, C(n.c, 70), 32);
+    dl.AddCircleFilled(V(ix, cy), 13, C(n.c), 32);
+    const w = C(WHITE);
+    if (sim.kind === "info") {
+      dl.AddCircleFilled(V(ix, cy - 5), 1.7, w, 10);
+      dl.AddRectFilled(V(ix - 1.5, cy - 1), V(ix + 1.5, cy + 6), w, 1);
+    } else if (sim.kind === "success") {
+      dl.AddLine(V(ix - 5, cy), V(ix - 1.5, cy + 4), w, 2.2);
+      dl.AddLine(V(ix - 1.5, cy + 4), V(ix + 5.5, cy - 4), w, 2.2);
+    } else if (sim.kind === "warn") {
+      dl.AddRectFilled(V(ix - 1.5, cy - 6), V(ix + 1.5, cy + 1.5), w, 1);
+      dl.AddCircleFilled(V(ix, cy + 5), 1.7, w, 10);
+    } else {
+      dl.AddLine(V(ix - 4.5, cy - 4.5), V(ix + 4.5, cy + 4.5), w, 2.2);
+      dl.AddLine(V(ix + 4.5, cy - 4.5), V(ix - 4.5, cy + 4.5), w, 2.2);
+    }
+    two(dl, x0 + 58, cy, n.title, n.msg, 15);
+  },
+
+  music({ dl, x0, x1, cy, t }) {
+    const ax = x0 + 15, ay = cy - 23;
+    dl.AddRectFilled(V(ax, ay), V(ax + 46, ay + 46), C([226, 96, 150]), 9);
+    dl.AddCircleFilled(V(ax + 30, ay + 16), 12, C([120, 90, 230], 170), 28);
+    dl.AddCircleFilled(V(ax + 15, ay + 31), 10, C([255, 190, 110], 170), 24);
+    dl.AddRect(V(ax, ay), V(ax + 46, ay + 46), C(WHITE, 120), 9, 1.2);
+    txt(dl, x0 + 72, cy - 24, 15, ink(), "Midnight City");
+    txt(dl, x0 + 72, cy - 7, 12, dim(), "M83");
+    const frac = (t * 0.03) % 1;
+    bar(dl, x0 + 72, x1 - 82, cy + 17, 4, frac, frac, WHITE);
+    txt(dl, x1 - 72, cy + 10, 11, dim(), clock(frac * 243));
+    for (let i = 0; i < 4; i++) {
+      const bh = 5 + 15 * Math.abs(Math.sin(t * 3.2 + i * 1.4));
+      dl.AddRectFilled(V(x1 - 34 + i * 6, cy - bh / 2 - 4), V(x1 - 30 + i * 6, cy + bh / 2 - 4), ink(230), 2);
+    }
+  },
+
+  timer({ dl, x0, cy, t }) {
+    const frac = 1 - (t % 30) / 30, c = V(x0 + 29, cy);
+    dl.AddCircle(c, 14, C(S.track, 80), 40, 3);
+    dl.PathClear();
+    dl.PathArcTo(c, 14, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.max(0.02, frac), 40);
+    dl.PathStroke(ink(), 3);
+    txt(dl, x0 + 56, cy - 17, 18, ink(), clock(frac * 30));
+    txt(dl, x0 + 56, cy + 2, 12, dim(), "Bed protection");
+  },
+
+  loading({ dl, x0, x1, cy, t }) {
+    const c = V(x0 + 28, cy - 2), a = t * 5;
+    dl.AddCircle(c, 11, C(S.track, 70), 32, 2.5);
+    dl.PathClear();
+    dl.PathArcTo(c, 11, a, a + Math.PI * 1.25, 24);
+    dl.PathStroke(ink(), 2.5);
+    txt(dl, x0 + 54, cy - 21, 15, ink(), "Updating modules");
+    txt(dl, x0 + 54, cy - 4, 12, dim(), (sim.load * 20).toFixed(1) + " of 20.0 MB");
+    txt(dl, x1 - 18 - textW(17, Math.round(sim.load * 100) + "%"), cy - 20, 17, ink(), Math.round(sim.load * 100) + "%");
+    bar(dl, x0 + 54, x1 - 18, cy + 15, 4, sim.load, sim.load, WHITE);
+  },
+
+  health({ dl, x0, cy, t }) {
+    const s = 1.25 + 0.2 * Math.max(0, Math.sin(t * 6)), cx = x0 + 28, y = cy - 1, c = C([255, 84, 100]);
+    dl.AddCircleFilled(V(cx - 4 * s, y - 3 * s), 5 * s, c, 20);
+    dl.AddCircleFilled(V(cx + 4 * s, y - 3 * s), 5 * s, c, 20);
+    dl.AddTriangleFilled(V(cx - 8.8 * s, y - 1.2 * s), V(cx + 8.8 * s, y - 1.2 * s), V(cx, y + 9 * s), c);
+    two(dl, x0 + 56, cy, "4.5 HP", "Critical", 17);
+  },
+
+  ping({ dl, x0, cy, t }) {
+    const cx = x0 + 28, by = cy + 9, c = C([255, 196, 70]);
+    for (let r = 1; r <= 3; r++) {
+      dl.PathClear();
+      dl.PathArcTo(V(cx, by), 5.5 * r, -Math.PI * 0.78, -Math.PI * 0.22, 14);
+      dl.PathStroke(c, 2.4);
+    }
+    dl.AddCircleFilled(V(cx, by), 2, c, 10);
+    two(dl, x0 + 56, cy, Math.round(312 + 40 * Math.sin(t * 3)) + " ms", "High ping", 17);
+  },
+
+  chat({ dl, x0, x1, cy }) {
+    head(dl, x0 + 15, cy - 13, 3.25, SKINS[3], 0);
+    two(dl, x0 + 56, cy, "Notch", "gg, nice scaffold", 15);
+    txt(dl, x1 - 18 - textW(11.5, "now"), cy - 16, 11.5, dim(), "now");
+    dl.AddCircleFilled(V(x1 - 24, cy + 9), 4, C([70, 150, 255]), 12);
+  },
+
+  rec({ dl, x0, cy, t }) {
+    const p = 0.55 + 0.45 * Math.sin(t * 5);
+    dl.AddCircleFilled(V(x0 + 24, cy), 11, C([255, 70, 84], 50 * p), 24);
+    dl.AddCircleFilled(V(x0 + 24, cy), 6, C([255, 70, 84], 255 * (0.6 + 0.4 * p)), 20);
+    txt(dl, x0 + 42, cy - 8, 14, ink(), "REC");
+    txt(dl, x0 + 80, cy - 8, 14, dim(), clock(sim.rec));
+  },
+
+  speed({ dl, x0, cy, t }) {
+    for (let k = 0; k < 3; k++) {
+      const a = 70 + 185 * Math.max(0, Math.sin(t * 7 - k * 0.9)), x = x0 + 16 + k * 8;
+      dl.AddLine(V(x, cy - 8), V(x + 8, cy), ink(a), 2.4);
+      dl.AddLine(V(x + 8, cy), V(x, cy + 8), ink(a), 2.4);
+    }
+    two(dl, x0 + 56, cy, (17.8 + 2.2 * Math.sin(t * 1.4)).toFixed(1) + " b/s", "Speed", 17);
+  },
+
+  mini({ dl, x0, w, cy }) {
+    logo(dl, x0 + w / 2, cy, 13);
+  },
+};
+
+// ---- Scene -------------------------------------------------------------------------------------
+
+function drawBackdrop(sw, sh, t) {
+  if (!sim.backdrop[0]) return;
+  const bg = ImGui.GetBackgroundDrawList();
+  GA = 1;
+  bg.AddRectFilledMultiColor(V(0, 0), V(sw, sh), C(S.sky[0]), C(S.sky[0]), C(S.sky[1]), C(S.sky[1]));
+  // Soft drifting clouds, so the glass has something to refract.
+  for (let i = 0; i < 7; i++) {
+    const x = ((i * 211 + t * (7 + i * 2.4)) % (sw + 360)) - 180, y = 70 + (i * 131) % Math.max(200, sh * 0.62), r = 36 + (i % 3) * 20;
+    for (let k = 0; k < 4; k++) {
+      bg.AddCircleFilled(V(x, y), r + k * 12, C(WHITE, S.cloudA * 0.35), 32);
+      bg.AddCircleFilled(V(x + r * 0.9, y + 6), r * 0.8 + k * 10, C(WHITE, S.cloudA * 0.3), 32);
+      bg.AddCircleFilled(V(x - r * 0.9, y + 8), r * 0.7 + k * 10, C(WHITE, S.cloudA * 0.3), 32);
+    }
+  }
+}
+
+function drawIsland(dt, t, sw) {
+  const dl = ImGui.GetWindowDrawList(), st = BY_ID[isl.id];
+  spring(isl.w, st.w, dt);
+  spring(isl.h, st.h, dt);
+  const w = Math.max(44, isl.w.x), h = Math.max(26, isl.h.x);
+  const x0 = sw / 2 - w / 2, y0 = 18, x1 = x0 + w, y1 = y0 + h, r = Math.min(h, w) / 2, cy = y0 + h / 2;
+  GA = 1;
+
+  // Soft shadow under the pill.
+  for (let k = 1; k <= 7; k++) dl.AddRectFilled(V(x0 - k * 2, y0 - k + 7), V(x1 + k * 2, y1 + k * 2 + 7), C(S.shadow, 9), r + k * 2);
+
+  // Colored glow for urgent states (low health, warnings, errors, recording).
+  const glow = st.glow || (isl.id === "notify" && NOTIFY[sim.kind].glow) || null;
+  if (glow) isl.gc = glow;
+  isl.ga = damp(isl.ga, glow ? 1 : 0, 9, dt);
+  if (isl.ga > 0.01) {
+    const p = 0.55 + 0.45 * Math.sin(t * 5);
+    for (let k = 1; k <= 5; k++) dl.AddRect(V(x0 - k * 1.6, y0 - k * 1.6), V(x1 + k * 1.6, y1 + k * 1.6), C(isl.gc, (80 - k * 13) * p * isl.ga), r + k * 1.6, 2);
+  }
+
+  glass(dl, x0, y0, x1, y1, r, S.top, S.bot);
+  sheen(dl, x0, y0, x1, y1, r, S.shadowText ? 46 : 26);
+  dl.AddRect(V(x0, y0), V(x1, y1), C(S.edge, S.edgeA), r, 1.2);
+  dl.AddLine(V(x0 + r, y0 + 1.6), V(x1 - r, y0 + 1.6), C(WHITE, S.shadowText ? 130 : 40), 1);
+
+  // Content cross-fades: the old state fades out quickly while the new one fades in.
+  dl.PushClipRect(V(x0 + 2, y0), V(x1 - 2, y1), true);
+  for (const s of STATES) {
+    const on = isl.id === s.id;
+    isl.alpha[s.id] = damp(isl.alpha[s.id], on ? 1 : 0, on ? 12 : 26, dt);
+    if (isl.alpha[s.id] < 0.01) continue;
+    GA = isl.alpha[s.id];
+    DRAW[s.id]({ dl, x0, y0, x1, y1, cy, w, h, t });
+  }
+  GA = 1;
+  dl.PopClipRect();
+}
+
+// ---- Controls ----------------------------------------------------------------------------------
+
+// A grid of equal-width buttons. The width comes from the window, so labels always fit.
+function grid(items, cols, active, onPick, color) {
+  const gap = 10, bw = (ImGui.GetContentRegionAvail().x - gap * (cols - 1)) / cols;
+  items.forEach((it, i) => {
+    if (i % cols) ImGui.SameLine();
+    const on = active(it), col = color ? color(it) : null;
+    if (on) ImGui.PushStyleColor(ImGuiCol.Button, new ImVec4(0.2, 0.46, 0.92, 1));
+    else if (col) ImGui.PushStyleColor(ImGuiCol.Button, new ImVec4(col[0] / 255 * 0.8, col[1] / 255 * 0.8, col[2] / 255 * 0.8, 1));
+    if (ImGui.Button(it.label, V(bw, 40))) onPick(it);
+    if (on || col) ImGui.PopStyleColor();
+  });
+}
+
+function controls() {
+  ImGui.SetNextWindowPos(V(20, 90), ImGuiCond.FirstUseEver);
+  ImGui.SetNextWindowSize(V(560, 760), ImGuiCond.FirstUseEver);
+  ImGui.Begin("Dynamic island");
+  ImGui.PushFont(FONT || ImGui.GetFont(), 18);
+  ImGui.PushStyleVarImVec2(ImGuiStyleVar.FramePadding, V(14, 9));
+  ImGui.PushStyleVarImVec2(ImGuiStyleVar.ItemSpacing, V(10, 10));
+
+  ImGui.SeparatorText("State");
+  grid(STATES, 3, (s) => isl.id === s.id, (s) => go(s.id));
+
+  ImGui.SeparatorText("Scaffold");
+  grid(BLOCKS.map((b, i) => ({ label: b.name, i, c: b.c })), 4, (b) => sim.block === b.i, (b) => { sim.block = b.i; go("scaffold"); }, (b) => b.c);
+  ImGui.Checkbox("Place blocks", sim.run);
+  ImGui.SameLine();
+  if (ImGui.Button("Restock", V(140, 0))) { sim.blocks = 64; sim.trail = 1; }
+
+  ImGui.SeparatorText("Fight");
+  if (ImGui.Button("Hit target", V(180, 40))) { go("fight"); hit(); }
+  ImGui.SameLine();
+  if (ImGui.Button("New target", V(180, 40))) { go("fight"); newTarget(); }
+
+  ImGui.SeparatorText("Notification");
+  grid(Object.keys(NOTIFY).map((k) => ({ label: k })), 4, (k) => isl.id === "notify" && sim.kind === k.label, (k) => go("notify", k.label));
+
+  ImGui.SeparatorText("Module toggle");
+  if (ImGui.Button("Enable a module", V(230, 40))) go("toggle", true);
+  ImGui.SameLine();
+  if (ImGui.Button("Disable a module", V(230, 40))) go("toggle", false);
+
+  ImGui.SeparatorText("Look");
+  Object.keys(STYLES).forEach((k, i) => {
+    if (i) ImGui.SameLine();
+    if (ImGui.RadioButton(k, sim.style === k)) sim.style = k;
+  });
+  ImGui.SameLine();
+  ImGui.Checkbox("Backdrop", sim.backdrop);
+  ImGui.Checkbox("Cycle through every state", sim.auto);
+  if (sim.auto[0]) ImGui.SliderFloat("Seconds each", sim.interval, 1, 8, "%.1f");
+
+  ImGui.PopStyleVar(2);
+  ImGui.PopFont();
+  ImGui.End();
+}
+
+// A full-screen window with no background that ignores the mouse: the island's canvas.
+function overlay(draw) {
+  ImGui.SetNextWindowPos(V(0, 0));
+  ImGui.SetNextWindowSize(ImGui.GetIO().DisplaySize);
+  ImGui.PushStyleVarImVec2(ImGuiStyleVar.WindowPadding, V(0, 0));
+  const F = ImGuiWindowFlags;
+  ImGui.Begin("##island", null, F.NoTitleBar | F.NoResize | F.NoMove | F.NoScrollbar | F.NoScrollWithMouse | F.NoBackground | F.NoSavedSettings | F.NoInputs | F.NoNav | F.NoBringToFrontOnFocus);
+  ImGui.PopStyleVar();
+  draw();
+  ImGui.End();
+}
+
+function frame() {
+  const io = ImGui.GetIO(), dt = Math.min(io.DeltaTime, 1 / 30), t = ImGui.GetTime();
+  updateSim(dt, t);
+  drawBackdrop(io.DisplaySize.x, io.DisplaySize.y, t);
+  overlay(() => drawIsland(dt, t, io.DisplaySize.x));
+  controls();
 }
 `,
     "Blank": `function frame() {
